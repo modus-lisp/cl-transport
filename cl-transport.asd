@@ -1,0 +1,23 @@
+;;;; cl-transport.asd
+;;;;
+;;;; A uniform outbound transport: one DIAL that returns a binary stream + a close
+;;;; thunk, whether the bytes go direct or through a SOCKS5 proxy — plus a registry
+;;;; for optional pluggable backends (e.g. native Tor via the separate cl-tor-transport
+;;;; system).  Standalone: needs only usocket; no Tor/TLS/crypto stack unless a
+;;;; provider is loaded.
+
+(defsystem "cl-transport"
+  :description "Uniform outbound transport (direct / SOCKS5 / pluggable backends) with
+                a runtime backend registry.  Portable toward modus."
+  :version "0.1.0"
+  :author "ynniv"
+  :license "MIT"
+  :depends-on ("usocket")
+  :serial t
+  :components
+  ((:module "src"
+    :serial t
+    :components
+    ((:file "util")          ; tiny byte helpers (self-contained)
+     (:file "socks-client")  ; SOCKS5 CONNECT client (external proxy backend)
+     (:file "transport"))))) ; DIAL + REGISTER-TRANSPORT
