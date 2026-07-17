@@ -16,9 +16,11 @@
 
 (defpackage #:cl-transport
   (:use #:cl)
-  (:local-nicknames (#:socks #:cl-transport.socks))
+  (:local-nicknames (#:socks #:cl-transport.socks) (#:bt #:bordeaux-threads))
   (:export #:dial #:*default-transport* #:*socks-proxy*
-           #:register-transport #:transport-available-p))
+           #:register-transport #:transport-available-p
+           ;; inbound (src/inbound.lisp)
+           #:expose #:register-listener #:listener-available-p))
 
 (in-package #:cl-transport)
 

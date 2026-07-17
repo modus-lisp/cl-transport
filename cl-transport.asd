@@ -12,7 +12,7 @@
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("usocket")
+  :depends-on ("usocket" "bordeaux-threads")
   :serial t
   :components
   ((:module "src"
@@ -20,4 +20,5 @@
     :components
     ((:file "util")          ; tiny byte helpers (self-contained)
      (:file "socks-client")  ; SOCKS5 CONNECT client (external proxy backend)
-     (:file "transport"))))) ; DIAL + REGISTER-TRANSPORT
+     (:file "transport")     ; DIAL + REGISTER-TRANSPORT (outbound)
+     (:file "inbound")))))   ; EXPOSE + REGISTER-LISTENER (inbound; :tcp built in)
