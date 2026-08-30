@@ -26,6 +26,11 @@
 (defun skip (name why) (incf *skip*) (format t "  [skip] ~a — ~a~%" name why) (finish-output))
 (defun head (s) (format t "~%== ~a ==~%" s) (finish-output))
 
+(defun %lines (s)
+  (loop with start = 0 for nl = (position #\Newline s :start start)
+        collect (subseq s start (or nl (length s)))
+        while nl do (setf start (1+ nl))))
+
 (defun connect (addr port)
   "Attempt a connection; return :OK, or the condition."
   (handler-case
@@ -113,7 +118,28 @@
     (ok "…against the principal that made it"
         (string= (cl-transport.gate:connection-principal rec) "spool/feed")
         (cl-transport.gate:connection-principal rec))
-    (ok "…with the verdict" (eq (cl-transport.gate:connection-action rec) :deny))))
+    (ok "…with the verdict" (eq (cl-transport.gate:connection-action rec) :deny))
+    ;; HOW it travelled, not only where to.  Without this the log cannot answer the
+    ;; question somebody asks just before turning on `require * via cl-transport':
+    ;; what is still opening its own sockets?
+    (ok "…and the carrier it travelled over"
+        (eq (cl-transport.gate:connection-carrier rec) :direct)
+        (princ-to-string (cl-transport.gate:connection-carrier rec)))))
+
+;; A raw connection records itself as raw, which is the line a migration is read from.
+(let ((cl-transport.gate:*carrier* :raw))
+  (cl-transport.gate:clear-connections)
+  (cl-transport.gate::with-principal ("undialled") (connect +nowhere+ +noport+))
+  (let ((rec (first (cl-transport.gate:connections))))
+    (ok "a connection nobody dialled is recorded as :raw"
+        (and rec (eq (cl-transport.gate:connection-carrier rec) :raw)))))
+
+;; And the report says `deny' the same way it says `allow' — one shape, so a reader
+;; scans the column rather than the capitalisation.
+(let ((text (with-output-to-string (o) (cl-transport.gate:report :stream o :limit 5))))
+  (ok "the report is lowercase throughout, and names the carrier"
+      (and (search "via " text) (not (search "DENY" text)))
+      (string-right-trim '(#\Newline) (or (second (%lines text)) ""))))
 
 (head "the principal defaults to the thread")
 (cl-transport.gate:clear-connections)

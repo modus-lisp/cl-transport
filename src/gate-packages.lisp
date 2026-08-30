@@ -33,6 +33,6 @@
    ;; the record
    #:connections #:clear-connections #:report #:*record-limit*
    #:connection-principal #:connection-host #:connection-port
-   #:connection-action #:connection-rule #:connection-at
+   #:connection-action #:connection-rule #:connection-at #:connection-carrier
    ;; refusal
    #:blocked #:blocked-principal #:blocked-host #:blocked-port))

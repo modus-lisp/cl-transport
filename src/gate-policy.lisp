@@ -41,17 +41,34 @@
    127.0.0.1, and a policy written to keep the machine off the internet should not
    have to remember to keep it talking to itself.")
 
-(defstruct (rule (:constructor %make-rule))
-  (action :allow :type keyword)
-  (principal "*" :type string)
-  (host "*" :type string)
-  (port "*" :type string)
-  (source "" :type string))
+(defclass rule ()
+  ((action    :initarg :action    :initform :allow :reader rule-action)
+   (principal :initarg :principal :initform "*"    :reader rule-principal)
+   (host      :initarg :host      :initform "*"    :reader rule-host)
+   (port      :initarg :port      :initform "*"    :reader rule-port)
+   (source    :initarg :source    :initform ""     :reader rule-source)))
 
-(defstruct (requirement (:constructor %make-requirement))
-  (principal "*" :type string)
-  (carrier :direct :type keyword)
-  (source "" :type string))
+(defun %make-rule (&key (action :allow) (principal "*") (host "*") (port "*") (source ""))
+  (make-instance 'rule :action action :principal principal :host host
+                       :port (princ-to-string port) :source source))
+
+
+;;; CLASSES RATHER THAN STRUCTS, throughout the gate.  These are long-lived objects in
+;;; an image that gets code reloaded into it while it runs -- a desktop that has been
+;;; up for a week is the normal case, not the exceptional one -- and DEFSTRUCT makes
+;;; that a hard stop: adding one slot signals "attempt to redefine the STRUCTURE-OBJECT
+;;; class incompatibly", and the only way through is to drop the class and every live
+;;; instance with it.  CLOS was built for this; a redefined class updates its instances
+;;; instead of refusing to exist.  Measured the hard way: adding the carrier slot below
+;;; could not be loaded into the running desktop until the record was thrown away.
+
+(defclass requirement ()
+  ((principal :initarg :principal :initform "*"     :reader requirement-principal)
+   (carrier   :initarg :carrier   :initform :direct :reader requirement-carrier)
+   (source    :initarg :source    :initform ""      :reader requirement-source)))
+
+(defun %make-requirement (&key (principal "*") (carrier :direct) (source ""))
+  (make-instance 'requirement :principal principal :carrier carrier :source source))
 
 (defvar *rules* '() "The policy, in order.  First match wins.")
 (defvar *requirements* '()

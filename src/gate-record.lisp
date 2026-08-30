@@ -8,14 +8,21 @@
 
 (in-package #:cl-transport.gate)
 
-(defstruct (connection (:constructor %make-connection))
-  (at 0 :type integer)                  ; universal time
-  (principal "" :type string)
-  (host "" :type string)                ; the address, as a string
-  (names '() :type list)                ; hostnames it has been resolved from
-  (port 0)
-  (action :allow :type keyword)
-  (rule nil))
+(defclass connection ()
+  ((at        :initarg :at        :initform 0     :reader connection-at)   ; universal time
+   (principal :initarg :principal :initform ""    :reader connection-principal)
+   (host      :initarg :host      :initform ""    :reader connection-host) ; address as a string
+   (names     :initarg :names     :initform '()   :reader connection-names)
+   (port      :initarg :port      :initform 0     :reader connection-port)
+   (carrier   :initarg :carrier   :initform :raw  :reader connection-carrier)
+   (action    :initarg :action    :initform :allow :reader connection-action)
+   (rule      :initarg :rule      :initform nil   :reader connection-rule))
+  (:documentation "One outbound connection, and what was decided about it.
+    A class and not a struct -- see the note in gate-policy.lisp."))
+
+(defun %make-connection (&key at principal host names port carrier action rule)
+  (make-instance 'connection :at at :principal principal :host host :names names
+                             :port port :carrier carrier :action action :rule rule))
 
 (defvar *connections* '() "Most recent first.")
 (defvar *record-lock* (sb-thread:make-mutex :name "gate-record"))
@@ -23,10 +30,11 @@
   "Keep at most this many entries.  A desktop left running for a week should not be
    holding every connection it ever made.")
 
-(defun note-connection (principal host names port action rule)
+(defun note-connection (principal host names port action rule &optional (carrier *carrier*))
   (sb-thread:with-mutex (*record-lock*)
     (push (%make-connection :at (get-universal-time) :principal principal :host host
-                            :names names :port port :action action :rule rule)
+                            :names names :port port :action action :rule rule
+                            :carrier carrier)
           *connections*)
     (when (> (length *connections*) *record-limit*)
       (setf *connections* (subseq *connections* 0 *record-limit*)))))
@@ -44,7 +52,13 @@
   (sb-thread:with-mutex (*record-lock*) (setf *connections* '())) t)
 
 (defun report (&key (stream *standard-output*) (limit 40) principal action)
-  "Print the record: who went where, and what was decided."
+  "Print the record: who went where, HOW, and what was decided.
+
+   The carrier column is not decoration.  Before a policy can usefully say `require *
+   via cl-transport\', somebody has to know what the answer is today -- and the honest
+   answer, for a machine where nothing has been moved onto DIAL yet, is that every
+   line says `raw\'.  A log that showed only the destination would leave that
+   invisible until the requirement was turned on and everything broke at once."
   (let ((cs (connections :principal principal :action action :limit limit)))
     (if (null cs)
         (format stream "~&cl-transport: nothing recorded~@[ for ~a~]~%" principal)
@@ -52,11 +66,13 @@
           (format stream "~&~a connection~:p, most recent first~%" (length cs))
           (dolist (c cs)
             (multiple-value-bind (s m h) (decode-universal-time (connection-at c))
-              (format stream "  ~2,'0d:~2,'0d:~2,'0d  ~6a  ~24a  ~a:~a~@[  (~a)~]~%"
+              (format stream "  ~2,'0d:~2,'0d:~2,'0d  ~5a  ~22a  ~28a  via ~(~a~)~@[  (~a)~]~%"
                       h m s
-                      (if (eq (connection-action c) :deny) "DENY" "allow")
+                      (string-downcase (symbol-name (connection-action c)))
                       (connection-principal c)
-                      (or (first (connection-names c)) (connection-host c))
-                      (connection-port c)
+                      (format nil "~a:~a"
+                              (or (first (connection-names c)) (connection-host c))
+                              (connection-port c))
+                      (connection-carrier c)
                       (and (connection-rule c) (decision-source (connection-rule c))))))))
     (length cs)))

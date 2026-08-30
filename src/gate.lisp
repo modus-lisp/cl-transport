@@ -88,7 +88,7 @@
          (names (names-for host))
          (who (principal)))
     (multiple-value-bind (action why) (decide who host port names *carrier*)
-      (note-connection who host names port action why)
+      (note-connection who host names port action why *carrier*)
       (when (eq action :deny)
         (error 'blocked :principal who :host (or (first names) host) :port port :rule why))
       t)))
@@ -106,7 +106,7 @@
         ;; and push everything else out of it.
         (unless (gethash (list :logged who host port) *decisions*)
           (setf (gethash (list :logged who host port) *decisions*) t)
-          (note-connection who host (names-for host) port action why))
+          (note-connection who host (names-for host) port action why *carrier*))
         (error 'blocked :principal who :host host :port port :rule why))
       t)))
 
