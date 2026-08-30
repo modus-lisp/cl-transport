@@ -52,7 +52,12 @@
    (values stream closer): a binary stream usable like a socket stream, and a
    zero-arg thunk that tears the connection fully down.  Signals on failure, or if
    TRANSPORT has no registered backend (load its provider first)."
-  (case transport
+  ;; THE CARRIER IS DECLARED HERE, where it is actually chosen.  The gate below the
+  ;; socket reads it, so a policy can say `require loom/* via tor\' and have that mean
+  ;; something even about code that would rather open its own socket: that code carries
+  ;; :RAW, which satisfies no requirement.
+  (let ((cl-transport.gate:*carrier* transport))
+   (case transport
     (:direct
      (let ((sock (usocket:socket-connect host port
                                          :element-type '(unsigned-byte 8) :timeout timeout)))
@@ -67,4 +72,4 @@
            (funcall fn host port timeout)
            (error "cl-transport: no backend registered for transport ~s — load its ~
                    provider first (e.g. the cl-tor-transport system for :tor)."
-                  transport))))))
+                  transport)))))))
