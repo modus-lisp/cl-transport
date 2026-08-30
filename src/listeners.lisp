@@ -42,7 +42,31 @@
 ;;;; audio mix, the microphone, admission — is a stream protocol that cannot tell which it
 ;;;; got.  Nothing in this file changes what an existing caller does.
 
-(in-package #:cl-transport)
+(defpackage #:cl-transport.listeners
+  (:use #:cl)
+  (:documentation
+   "The sockets a server waits on: TCP and UNIX listeners, the mode bits a socket file
+    is created with, reclaiming one a dead process left behind, and SO_PEERCRED.
+
+    ITS OWN PACKAGE, AND ITS OWN SYSTEM, so that it depends on nothing but SBCL.  glass
+    needs these and nothing else from cl-transport, and glass has always been free of
+    quicklisp -- cram and two SBCL contribs -- which is what lets it be the display
+    layer on bare metal.  Folding it into the main CL-TRANSPORT package would have made
+    a window system depend on usocket and bordeaux-threads to open a socket it already
+    knew how to open.")
+  (:export
+   #:listener #:tcp-listener #:unix-listener #:open-listener #:unix-listen #:tcp-listen
+   #:close-listener
+   #:listener-kind #:listener-endpoint #:listener-open-p #:listener-socket
+   #:listener-path #:listener-port #:listener-address #:listener-mode
+   #:listener-peer-policy #:listener-refused #:listener-accept #:accept-stream
+   #:runtime-dir #:socket-path #:socket-sibling
+   #:*runtime-dir* #:*socket-file-mode* #:*socket-dir-mode*
+   #:clear-stale-socket #:unix-socket-live-p
+   #:peer-credentials #:peer-allowed-p #:peer-name #:socket-fd #:*peer-policy*
+   #:open-connection #:parse-endpoint #:endpoint-string #:socket-unsent-bytes))
+
+(in-package #:cl-transport.listeners)
 
 ;;; ---- where socket files live -------------------------------------------------
 ;;;

@@ -21,21 +21,20 @@
            #:register-transport #:transport-available-p
            ;; inbound (src/inbound.lisp)
            #:expose #:register-listener #:listener-available-p
-           ;; the listeners themselves (src/listeners.lisp), moved here from glass:
-           ;; a display server had no business owning sockets, and every platform
-           ;; assumption in the workspace was hiding in them.
-           #:listener #:tcp-listener #:unix-listener #:open-listener
-           #:tcp-listen #:unix-listen #:close-listener
-           #:listener-kind #:listener-endpoint #:listener-open-p #:listener-socket
-           #:listener-path #:listener-port #:listener-address #:listener-mode
-           #:listener-peer-policy #:listener-refused #:listener-accept #:accept-stream
-           #:runtime-dir #:socket-path #:socket-sibling
-           #:*runtime-dir* #:*socket-file-mode* #:*socket-dir-mode*
-           #:clear-stale-socket #:unix-socket-live-p
-           #:peer-credentials #:peer-allowed-p #:peer-name #:socket-fd #:*peer-policy*
-           #:open-connection #:parse-endpoint #:endpoint-string #:socket-unsent-bytes))
+           ;; The listener layer (src/listeners.lisp, its own package and its own
+           ;; system) is IMPORTED and re-exported just below, not named here.  Naming
+           ;; it in this :export would intern CL-TRANSPORT::SOCKET-PATH as a symbol of
+           ;; its own, and IMPORT would then refuse it as a conflict -- the same trap
+           ;; glass/fb's packages.lisp sets, for the same reason.
+           ))
 
 (in-package #:cl-transport)
+
+;;; The listener layer, borrowed from its own package so that this one can speak of it.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (do-external-symbols (s (find-package '#:cl-transport.listeners))
+    (import s '#:cl-transport)
+    (export s '#:cl-transport)))
 
 (defparameter *default-transport* :direct
   "Transport used when DIAL is called without an explicit :TRANSPORT.")
