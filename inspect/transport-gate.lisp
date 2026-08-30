@@ -141,6 +141,21 @@
       (and (search "via " text) (not (search "DENY" text)))
       (string-right-trim '(#\Newline) (or (second (%lines text)) ""))))
 
+(head "the record is readable, not only printable")
+;; REPORT prints; CONNECTIONS is the data behind it.  Over a control socket the objects
+;; are opaque, so :PLIST is what a caller on the far end of `kiln eval' actually gets.
+(let* ((pl (first (cl-transport.gate:connections :limit 1 :as :plist))))
+  (ok "…as a plist" (and (listp pl) (getf pl :principal))
+      (princ-to-string (getf pl :principal)))
+  (ok "…naming the carrier and the verdict"
+      (and (getf pl :carrier) (getf pl :action)))
+  (ok "…and where the decision came from, as text rather than an object"
+      (or (null (getf pl :source)) (stringp (getf pl :source))))
+  ;; The whole point: it survives a round trip through a socket, which an object does not.
+  (ok "…and reads back after being printed"
+      (let ((again (read-from-string (prin1-to-string pl))))
+        (equal (getf again :principal) (getf pl :principal)))))
+
 (head "the principal defaults to the thread")
 (cl-transport.gate:clear-connections)
 (let ((th (sb-thread:make-thread (lambda () (connect +nowhere+ +noport+))

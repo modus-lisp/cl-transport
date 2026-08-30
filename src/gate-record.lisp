@@ -39,14 +39,36 @@
     (when (> (length *connections*) *record-limit*)
       (setf *connections* (subseq *connections* 0 *record-limit*)))))
 
-(defun connections (&key principal action (limit 100))
-  "The record, most recent first, optionally filtered."
+(defun connection-plist (c)
+  "One connection as a property list -- the same facts REPORT prints, in a form
+   something else can read.
+
+   READABLE ON PURPOSE.  The objects themselves are the better thing to have in the
+   image, but they cross a control socket as #<CONNECTION {700D98ED83}>, and asking a
+   running desktop what it has been talking to is exactly what that socket is for.
+   Everything here prints and reads back: strings, keywords, integers."
+  (list :at        (connection-at c)
+        :principal (connection-principal c)
+        :host      (connection-host c)
+        :names     (connection-names c)
+        :port      (connection-port c)
+        :carrier   (connection-carrier c)
+        :action    (connection-action c)
+        ;; The rule itself is an object; what a reader wants is where it came from.
+        :source    (let ((r (connection-rule c))) (and r (decision-source r)))))
+
+(defun connections (&key principal action (limit 100) (as :object))
+  "The record, most recent first, optionally filtered.
+
+   AS is :OBJECT (the default) or :PLIST -- see CONNECTION-PLIST for why the second
+   exists."
   (let ((all (sb-thread:with-mutex (*record-lock*) (copy-list *connections*))))
     (when principal
       (setf all (remove-if-not (lambda (c) (glob-match-p principal (connection-principal c))) all)))
     (when action
       (setf all (remove action all :key #'connection-action :test-not #'eq)))
-    (if (and limit (> (length all) limit)) (subseq all 0 limit) all)))
+    (when (and limit (> (length all) limit)) (setf all (subseq all 0 limit)))
+    (if (eq as :plist) (mapcar #'connection-plist all) all)))
 
 (defun clear-connections ()
   (sb-thread:with-mutex (*record-lock*) (setf *connections* '())) t)

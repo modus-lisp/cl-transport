@@ -34,5 +34,6 @@
    #:connections #:clear-connections #:report #:*record-limit*
    #:connection-principal #:connection-host #:connection-port
    #:connection-action #:connection-rule #:connection-at #:connection-carrier
+   #:connection-names #:connection-plist
    ;; refusal
    #:blocked #:blocked-principal #:blocked-host #:blocked-port))
