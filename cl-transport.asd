@@ -26,5 +26,6 @@
      (:file "gate-record")   ; what was asked for, and what was decided
      (:file "socks-client")  ; SOCKS5 CONNECT client (external proxy backend)
      (:file "transport")     ; DIAL + REGISTER-TRANSPORT (outbound)
+     (:file "listeners")     ; TCP/UNIX listeners, peer credentials (from glass)
      (:file "inbound")       ; EXPOSE + REGISTER-LISTENER (inbound; :tcp built in)
      (:file "gate")))))      ; the hook itself, and INITIALIZE

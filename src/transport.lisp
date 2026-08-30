@@ -20,7 +20,20 @@
   (:export #:dial #:*default-transport* #:*socks-proxy*
            #:register-transport #:transport-available-p
            ;; inbound (src/inbound.lisp)
-           #:expose #:register-listener #:listener-available-p))
+           #:expose #:register-listener #:listener-available-p
+           ;; the listeners themselves (src/listeners.lisp), moved here from glass:
+           ;; a display server had no business owning sockets, and every platform
+           ;; assumption in the workspace was hiding in them.
+           #:listener #:tcp-listener #:unix-listener #:open-listener
+           #:tcp-listen #:unix-listen #:close-listener
+           #:listener-kind #:listener-endpoint #:listener-open-p #:listener-socket
+           #:listener-path #:listener-port #:listener-address #:listener-mode
+           #:listener-peer-policy #:listener-refused #:listener-accept #:accept-stream
+           #:runtime-dir #:socket-path #:socket-sibling
+           #:*runtime-dir* #:*socket-file-mode* #:*socket-dir-mode*
+           #:clear-stale-socket #:unix-socket-live-p
+           #:peer-credentials #:peer-allowed-p #:peer-name #:socket-fd #:*peer-policy*
+           #:open-connection #:parse-endpoint #:endpoint-string #:socket-unsent-bytes))
 
 (in-package #:cl-transport)
 
