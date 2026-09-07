@@ -63,7 +63,6 @@
    ;; ---- byte helpers (see the header: copied from webrtc-data/src/util.lisp) ----
    #:u8 #:u8vec #:as-u8vec #:cat-bytes #:ascii #:bytes->ascii
    #:u8! #:u16be #:u32be #:rd-u16be #:rd-u32be #:random-bytes
-   #:hexbytes #:colon-hex
    ;; ---- the protocols: everything stun.lisp and turn.lisp define ----
    #:+attr-channel-number+ #:+attr-data+ #:+attr-error-code+ #:+attr-fingerprint+
    #:+attr-ice-controlled+ #:+attr-ice-controlling+ #:+attr-lifetime+ #:+attr-message-integrity+
@@ -120,10 +119,6 @@
 (defun ascii (s) (map 'u8vec #'char-code s))
 (defun bytes->ascii (v) (map 'string #'code-char v))
 (defun u8! (n) (logand n #xff))
-
-;;; ...and the two ICE brought with it.
-(defun hexbytes (v) (string-downcase (format nil "~{~2,'0x~}" (coerce v 'list))))
-(defun colon-hex (v) (format nil "~{~2,'0X~^:~}" (coerce v 'list)))
 
 ;;; big-endian integer read/write
 (defun u16be (n) (as-u8vec (list (u8! (ash n -8)) (u8! n))))
