@@ -24,6 +24,30 @@
   :serial t
   :components ((:module "src" :serial t :components ((:file "listeners")))))
 
+
+;;; The connectivity stack, on its own.  STUN/TURN/ICE are how two peers behind NATs find
+;;; a path to each other -- an IETF stack that predates WebRTC and is used by SIP too, so
+;;; it belongs beside the transports rather than inside a WebRTC library.
+;;;
+;;; ITS OWN SYSTEM FOR /listeners' REASON, WITH A DIFFERENT ANSWER.  listeners is
+;;; sb-bsd-sockets alone so a window system can open a socket without quicklisp.  This one
+;;; genuinely needs bordeaux-threads (TURN runs a refresh timer and a transaction loop) and
+;;; ironclad (MESSAGE-INTEGRITY is HMAC-SHA1; the long-term credential is MD5).  What it
+;;; does not need is usocket -- so a caller wanting NAT traversal does not also get a
+;;; SOCKS5 client, which declaring the whole of cl-transport would have handed them.
+(defsystem "cl-transport/ice"
+  :description "STUN, TURN and ICE: connectivity establishment between peers behind NATs.
+                Independent of WebRTC, which is one consumer of it."
+  :version "0.1.0"
+  :author "ynniv"
+  :license "MIT"
+  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad")
+  :serial t
+  :components ((:module "src" :serial t
+                :components ((:file "ice-packages")   ; the package + its byte helpers
+                             (:file "stun")           ; RFC 5389 framing, attributes, integrity
+                             (:file "turn")))))       ; RFC 5766/8656 relay client
+
 (defsystem "cl-transport"
   :description "Uniform outbound transport (direct / SOCKS5 / pluggable backends) with
                 a runtime backend registry.  Portable toward modus."
