@@ -41,12 +41,13 @@
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad")
+  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad" "uiop")
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "ice-packages")   ; the package + its byte helpers
                              (:file "stun")           ; RFC 5389 framing, attributes, integrity
-                             (:file "turn")))))       ; RFC 5766/8656 relay client
+                             (:file "turn")           ; RFC 5766/8656 relay client
+                             (:file "ice")))))        ; RFC 8445 agent: candidates, checks, selection
 
 (defsystem "cl-transport"
   :description "Uniform outbound transport (direct / SOCKS5 / pluggable backends) with

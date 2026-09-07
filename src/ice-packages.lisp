@@ -58,11 +58,12 @@
 (defpackage #:cl-transport.ice
   (:use #:cl)
   (:local-nicknames (#:ic #:ironclad))
-  (:documentation "STUN, TURN and (later) ICE: getting a datagram between two peers behind NATs.")
+  (:documentation "STUN, TURN and ICE: getting a datagram between two peers behind NATs.")
   (:export
    ;; ---- byte helpers (see the header: copied from webrtc-data/src/util.lisp) ----
    #:u8 #:u8vec #:as-u8vec #:cat-bytes #:ascii #:bytes->ascii
    #:u8! #:u16be #:u32be #:rd-u16be #:rd-u32be #:random-bytes
+   #:hexbytes #:colon-hex
    ;; ---- the protocols: everything stun.lisp and turn.lisp define ----
    #:+attr-channel-number+ #:+attr-data+ #:+attr-error-code+ #:+attr-fingerprint+
    #:+attr-ice-controlled+ #:+attr-ice-controlling+ #:+attr-lifetime+ #:+attr-message-integrity+
@@ -84,13 +85,28 @@
    #:turn-channel-bind #:turn-channeldata-p #:turn-create-permission #:turn-deliver-control
    #:turn-install-peer #:turn-long-term-key #:turn-refresh #:turn-refresh-via-loop
    #:turn-start-refresh #:turn-wrap-channeldata #:turn-wrap-send-indication #:xor-mapped-address
-   ;; ---- and two internals, exported ONLY because ICE has not moved yet --------------
-   ;; The percent prefix means "not part of the surface", and these are not: they are the
-   ;; transaction loop and the is-this-from-my-relay test, which ice.lisp calls because it
-   ;; and turn.lisp were one package until this commit.  When ICE lands here they become
-   ;; internal again and these two lines go.  Naming them here rather than letting ice.lisp
-   ;; reach in with a double colon keeps the debt VISIBLE and greppable.
-   #:%turn-txn-loop #:%from-turn-server-p))
+   ;; ---- ICE (RFC 8445) --------------------------------------------------------------
+   #:ice-candidate #:ice-candidate-p #:make-ice-candidate
+   #:ice-candidate-foundation #:ice-candidate-component #:ice-candidate-transport
+   #:ice-candidate-priority #:ice-candidate-ip #:ice-candidate-port
+   #:ice-candidate-type
+   ;; %TURN-TXN-LOOP and %FROM-TURN-SERVER-P are NO LONGER EXPORTED: they were, for one
+   ;; commit, only because ice.lisp lived in another package and had to reach them.  It is
+   ;; here now, so they are internal again, which is what the percent prefix always meant.
+   #:*stun-servers* #:*turn-debug* #:+ice-chars+ #:+turn-relay-priority+
+   #:ice-agent #:ice-agent-check-thread #:ice-agent-created-at #:ice-agent-last-rx
+   #:ice-agent-local-ip #:ice-agent-local-pwd #:ice-agent-local-ufrag #:ice-agent-on-media
+   #:ice-agent-on-packet #:ice-agent-p #:ice-agent-peer #:ice-agent-port
+   #:ice-agent-relay-ip #:ice-agent-relay-port #:ice-agent-remote-candidates #:ice-agent-remote-pwd
+   #:ice-agent-remote-ufrag #:ice-agent-route-changes #:ice-agent-selected-at #:ice-agent-selected-first
+   #:ice-agent-socket #:ice-agent-srflx-ip #:ice-agent-srflx-port #:ice-agent-stop
+   #:ice-agent-thread #:ice-agent-turn #:ice-bind-relay-peer-async #:ice-close
+   #:ice-dispatch #:ice-gather-relay #:ice-gather-srflx #:ice-handle-stun
+   #:ice-local-end-type #:ice-note-peer #:ice-offered-counts #:ice-relayed-inner
+   #:ice-relayed-inner-send #:ice-remote-end-type #:ice-route-label #:ice-selection-secs
+   #:ice-send #:ice-send-to-peer #:ice-serve #:ice-silent-secs
+   #:ice-start-checks #:ice-string #:local-ipv4 #:make-ice
+   #:make-ice-agent #:resolve-host #:tdbg #:ice-accept-remote))
 
 (in-package #:cl-transport.ice)
 
@@ -104,6 +120,10 @@
 (defun ascii (s) (map 'u8vec #'char-code s))
 (defun bytes->ascii (v) (map 'string #'code-char v))
 (defun u8! (n) (logand n #xff))
+
+;;; ...and the two ICE brought with it.
+(defun hexbytes (v) (string-downcase (format nil "~{~2,'0x~}" (coerce v 'list))))
+(defun colon-hex (v) (format nil "~{~2,'0X~^:~}" (coerce v 'list)))
 
 ;;; big-endian integer read/write
 (defun u16be (n) (as-u8vec (list (u8! (ash n -8)) (u8! n))))
