@@ -49,6 +49,17 @@
                              (:file "turn")           ; RFC 5766/8656 relay client
                              (:file "ice")))))        ; RFC 8445 agent: candidates, checks, selection
 
+;;; A TCP client engine with no I/O: segments in, segments out, time passed in.  For
+;;; links that carry IP packets but have no kernel TCP behind them (an overlay that
+;;; tunnels IPv6, a bare-metal NIC).  No dependencies at all, so modus can take it.
+(defsystem "cl-transport/tcp"
+  :description "A pure TCP client engine (RFC 9293 subset, IPv6 pseudo-header
+                checksums): no sockets, no clock, no dependencies."
+  :version "0.1.0"
+  :author "ynniv"
+  :license "MIT"
+  :components ((:module "src" :components ((:file "tcp")))))
+
 (defsystem "cl-transport"
   :description "Uniform outbound transport (direct / SOCKS5 / pluggable backends) with
                 a runtime backend registry.  Portable toward modus."
