@@ -50,7 +50,9 @@
    40-byte IPv6 header and the 20-byte TCP header.")
 (defconstant +tcp-window+ 65535 "The receive window we advertise (no scaling).")
 (defconstant +tcp-cwnd-segments+ 16 "A fixed congestion window, in segments.")
-(defconstant +tcp-rto-ms+ 1000)
+(defconstant +tcp-rto-ms+ 1000 "The RTO before any round trip has been measured (RFC 6298 2.1).")
+(defconstant +tcp-rto-min-ms+ 200 "The measured RTO's floor (Linux's; RFC 6298 says 1 s).")
+(defconstant +tcp-dupack-threshold+ 3)
 (defconstant +tcp-rto-max-ms+ 60000)
 (defconstant +tcp-max-retries+ 8)
 (defconstant +tcp-ooo-max+ 256 "Out-of-order segments held at most.")
@@ -129,8 +131,11 @@
   iss snd-una snd-nxt (snd-wnd 1024) (peer-mss 536) (mss +tcp-default-mss+)
   rcv-nxt
   (outq (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
-  (unacked '())                      ; ((seq flags data) ...) oldest first
+  (unacked '())                      ; ((seq flags data sent-at resent) ...) oldest first
   (rto +tcp-rto-ms+) (rtx-at nil) (retries 0)
+  ;; RFC 6298's estimator (BASE-RTO is the RTO it measured; RTO adds the backoff)
+  (srtt nil) (rttvar 0) (base-rto +tcp-rto-ms+)
+  (dupacks 0) (fast-rtx nil)         ; RFC 5681 fast retransmit
   (ooo '())                          ; ((seq . data) ...) out of order
   (fin-at nil)                       ; the sequence number of a FIN that came early
   (inbox '())                        ; delivered byte vectors, oldest first
@@ -144,7 +149,7 @@
    MSS is what we offer: the largest segment our link carries in one packet."
   (let ((c (%make-tcp-conn :local local :remote remote :lport lport :rport rport :mss mss
                            :iss iss :snd-una iss :snd-nxt (seq+ iss 1))))
-    (setf (tcp-conn-unacked c) (list (list iss +tcp-syn+ (bytes-of)))
+    (setf (tcp-conn-unacked c) (list (list iss +tcp-syn+ (bytes-of) now nil))
           (tcp-conn-rtx-at c) (+ now (tcp-conn-rto c)))
     (values c (list (%seg c iss +tcp-syn+ (bytes-of) :mss mss)))))
 
@@ -205,30 +210,46 @@
         (:syn-sent
          (when (and (logtest flags +tcp-syn+) (logtest flags +tcp-ack+)
                     (= (seg-ack s) (seq+ (tcp-conn-iss c) 1)))
+           (%rtt-sample-acked c (seg-ack s) now)
            (setf (tcp-conn-rcv-nxt c) (seq+ (seg-seq s) 1)
                  (tcp-conn-snd-una c) (seg-ack s)
                  (tcp-conn-snd-wnd c) (seg-window s)
                  (tcp-conn-peer-mss c) (min (tcp-conn-mss c) (or (seg-mss s) 536))
                  (tcp-conn-unacked c) '() (tcp-conn-rtx-at c) nil
-                 (tcp-conn-rto c) +tcp-rto-ms+ (tcp-conn-retries c) 0
+                 (tcp-conn-rto c) (tcp-conn-base-rto c) (tcp-conn-retries c) 0
                  (tcp-conn-state c) :established (tcp-conn-ack-due c) t)
            (push :established events)))
         (:established
          ;; the ack
          (when (logtest flags +tcp-ack+)
            (let ((ack (seg-ack s)))
+             ;; a duplicate ack: nothing new acked, no data, the window unchanged,
+             ;; and data outstanding -- the segment after ACK is missing (RFC 5681)
+             (when (and (= ack (tcp-conn-snd-una c)) (zerop (length (seg-data s)))
+                        (not (logtest flags (logior +tcp-syn+ +tcp-fin+)))
+                        (= (seg-window s) (tcp-conn-snd-wnd c)) (tcp-conn-unacked c))
+               (when (= (incf (tcp-conn-dupacks c)) +tcp-dupack-threshold+)
+                 (setf (tcp-conn-fast-rtx c) t)))
              (when (and (seq< (tcp-conn-snd-una c) ack) (seq<= ack (tcp-conn-snd-nxt c)))
+               (%rtt-sample-acked c ack now)
                (setf (tcp-conn-snd-una c) ack
                      (tcp-conn-unacked c)
                      (remove-if (lambda (u) (seq<= (seq+ (first u) (%seg-len u)) ack)) (tcp-conn-unacked c))
-                     (tcp-conn-rto c) +tcp-rto-ms+ (tcp-conn-retries c) 0
-                     (tcp-conn-rtx-at c) (and (tcp-conn-unacked c) (+ now +tcp-rto-ms+)))
+                     (tcp-conn-rto c) (tcp-conn-base-rto c) (tcp-conn-retries c) 0
+                     (tcp-conn-dupacks c) 0
+                     (tcp-conn-rtx-at c) (and (tcp-conn-unacked c) (+ now (tcp-conn-base-rto c))))
                (when (and (tcp-conn-fin-sent c) (= ack (tcp-conn-snd-nxt c)))
                  (setf (tcp-conn-fin-acked c) t)))
              (setf (tcp-conn-snd-wnd c) (seg-window s))))
          ;; the data and the FIN, in sequence space
          (let* ((data (seg-data s)) (seq (seg-seq s)) (fin (logtest flags +tcp-fin+)))
-           (when (or (plusp (length data)) fin) (setf (tcp-conn-ack-due c) t))
+           ;; ack anything that carries data or a FIN -- and anything old: a repeated
+           ;; SYN-ACK means our handshake ack was lost, and a segment behind RCV-NXT
+           ;; means one of our acks was.  Unanswered, the peer resends until it gives
+           ;; up (RFC 9293 3.10.7.4: an unacceptable segment gets an ack in reply).
+           (when (or (plusp (length data)) fin (logtest flags +tcp-syn+)
+                     (seq< seq (tcp-conn-rcv-nxt c)))
+             (setf (tcp-conn-ack-due c) t))
            ;; trim what we already have
            (let ((behind (seq- (tcp-conn-rcv-nxt c) seq)))
              (when (and (plusp behind) (plusp (length data)))
@@ -261,6 +282,20 @@
       (push :closed events))
     (nreverse events)))
 
+(defun %rtt-sample-acked (c ack now)
+  "A round-trip sample from the newest segment ACK covers, if it was sent only once
+   (Karn's rule), folded into SRTT and RTTVAR (RFC 6298 section 2)."
+  (let ((u (find-if (lambda (u) (seq<= (seq+ (first u) (%seg-len u)) ack)) (reverse (tcp-conn-unacked c)))))
+    (when (and u (not (fifth u)))
+      (let ((r (max 0 (- now (fourth u)))))
+        (if (null (tcp-conn-srtt c))
+            (setf (tcp-conn-srtt c) r (tcp-conn-rttvar c) (/ r 2))
+            (setf (tcp-conn-rttvar c) (+ (* 3/4 (tcp-conn-rttvar c)) (* 1/4 (abs (- (tcp-conn-srtt c) r))))
+                  (tcp-conn-srtt c) (+ (* 7/8 (tcp-conn-srtt c)) (* 1/8 r))))
+        (setf (tcp-conn-base-rto c)
+              (round (max +tcp-rto-min-ms+
+                          (min +tcp-rto-max-ms+ (+ (tcp-conn-srtt c) (* 4 (tcp-conn-rttvar c)))))))))))
+
 (defun %seg-len (u)
   "Sequence space an unacked entry takes: its data, plus one for SYN or FIN."
   (+ (length (third u)) (if (logtest (second u) (logior +tcp-syn+ +tcp-fin+)) 1 0)))
@@ -271,13 +306,25 @@
    stopped answering and the connection is closed."
   (let ((out '()))
     (when (eq (tcp-conn-state c) :closed) (return-from tcp-output (values nil nil)))
+    ;; fast retransmit: the oldest unacked segment again, without waiting for the
+    ;; timer and without backing it off
+    (when (and (tcp-conn-fast-rtx c) (tcp-conn-unacked c))
+      (setf (tcp-conn-fast-rtx c) nil)
+      (destructuring-bind (seq flags data &rest r) (first (tcp-conn-unacked c))
+        (declare (ignore r))
+        (setf (fifth (first (tcp-conn-unacked c))) t)
+        (push (%seg c seq flags data) out)
+        (setf (tcp-conn-ack-due c) nil (tcp-conn-rtx-at c) (+ now (tcp-conn-rto c)))))
+    (setf (tcp-conn-fast-rtx c) nil)
     ;; retransmission: the oldest unacked segment
     (when (and (tcp-conn-rtx-at c) (>= now (tcp-conn-rtx-at c)) (tcp-conn-unacked c))
       (if (>= (tcp-conn-retries c) +tcp-max-retries+)
           (progn (setf (tcp-conn-state c) :closed (tcp-conn-reset c) t)
                  (return-from tcp-output
                    (values (list (%seg c (tcp-conn-snd-nxt c) +tcp-rst+ (bytes-of))) (list :reset))))
-          (destructuring-bind (seq flags data) (first (tcp-conn-unacked c))
+          (destructuring-bind (seq flags data &rest r) (first (tcp-conn-unacked c))
+            (declare (ignore r))
+            (setf (fifth (first (tcp-conn-unacked c))) t)
             (push (%seg c seq flags data :mss (and (logtest flags +tcp-syn+) (tcp-conn-mss c))) out)
             (incf (tcp-conn-retries c))
             (setf (tcp-conn-rto c) (min +tcp-rto-max-ms+ (* 2 (tcp-conn-rto c)))
@@ -298,7 +345,7 @@
             (let ((rest (subseq (tcp-conn-outq c) n)))
               (setf (fill-pointer (tcp-conn-outq c)) 0)
               (loop for b across rest do (vector-push-extend b (tcp-conn-outq c))))
-            (setf (tcp-conn-unacked c) (append (tcp-conn-unacked c) (list (list seq flags data)))
+            (setf (tcp-conn-unacked c) (append (tcp-conn-unacked c) (list (list seq flags data now nil)))
                   (tcp-conn-snd-nxt c) (seq+ seq n))
             (unless (tcp-conn-rtx-at c) (setf (tcp-conn-rtx-at c) (+ now (tcp-conn-rto c))))
             (push (%seg c seq flags data) out)
@@ -307,7 +354,7 @@
       (when (and (tcp-conn-close-requested c) (not (tcp-conn-fin-sent c))
                  (zerop (length (tcp-conn-outq c))))
         (let ((seq (tcp-conn-snd-nxt c)))
-          (setf (tcp-conn-unacked c) (append (tcp-conn-unacked c) (list (list seq +tcp-fin+ (bytes-of))))
+          (setf (tcp-conn-unacked c) (append (tcp-conn-unacked c) (list (list seq +tcp-fin+ (bytes-of) now nil)))
                 (tcp-conn-snd-nxt c) (seq+ seq 1)
                 (tcp-conn-fin-sent c) t)
           (unless (tcp-conn-rtx-at c) (setf (tcp-conn-rtx-at c) (+ now (tcp-conn-rto c))))

@@ -78,6 +78,16 @@
     (ok "segments respect the peer's smaller MSS (500)"
         (equal (mapcar (lambda (s) (length (seg-data s))) segs) '(500 500 200)))))
 
+(head "a lost handshake ack")
+(multiple-value-bind (c their ours) (open-conn)
+  ;; our ack of their SYN-ACK was lost: they send the SYN-ACK again
+  (tcp-input c (peer-seg (seq+ their -1) ours (logior +tcp-syn+ +tcp-ack+) (v)) 500)
+  (let ((r (mapcar #'mine (tcp-output c 500))))
+    (ok "a repeated SYN-ACK is acked again"
+        (and (= 1 (length r)) (= (seg-ack (first r)) their) (= (seg-flags (first r)) +tcp-ack+))))
+  (tcp-input c (peer-seg (seq+ their -5) ours +tcp-ack+ (v)) 600)
+  (ok "so is an old segment behind what we have" (= 1 (length (tcp-output c 600)))))
+
 (head "a lost SYN")
 (multiple-value-bind (c syns) (tcp-open *us* *them* 40000 80 0 :iss 77)
   (declare (ignore syns))
@@ -129,6 +139,37 @@
                (when ev (setf events ev) (return))))
     (ok "a peer that never acks ends in a reset, after the retries" (equal events '(:reset)))
     (ok "... and the connection is closed" (eq (tcp-conn-state c) :closed))))
+
+(head "the round trip, and fast retransmit")
+(multiple-value-bind (c syns) (tcp-open *us* *them* 40000 80 0 :iss 1000)
+  (let ((syn (mine (first syns))))
+    ;; the SYN-ACK 100 ms later: R = 100, so SRTT 100, RTTVAR 50, RTO 100 + 4*50 = 300
+    (tcp-input c (peer-seg 5000 (seq+ (seg-seq syn) 1) (logior +tcp-syn+ +tcp-ack+) (v)) 100))
+  (tcp-output c 100)
+  (tcp-write c (ascii "abc"))
+  (tcp-output c 100)
+  (ok "the RTO is measured from the handshake (300 ms, not 1 s)"
+      (and (null (tcp-output c 399)) (= 1 (length (tcp-output c 400))))))
+(multiple-value-bind (c syns) (tcp-open *us* *them* 40000 80 0 :iss 1000)
+  (declare (ignore syns))
+  (tcp-output c 1000)                           ; the SYN, resent
+  (tcp-input c (peer-seg 5000 1001 (logior +tcp-syn+ +tcp-ack+) (v)) 1010)
+  (tcp-output c 1010)
+  (tcp-write c (ascii "abc"))
+  (tcp-output c 1010)
+  (ok "a resent segment's ack is not a sample (Karn): the RTO stays 1 s"
+      (and (null (tcp-output c 2009)) (tcp-output c 2010))))
+(multiple-value-bind (c their ours) (open-conn :mss 100)
+  (tcp-write c (make-array 500 :element-type '(unsigned-byte 8) :initial-element 3))
+  (tcp-output c 0)                              ; five segments of 100 out
+  ;; the first is lost: the peer acks OURS three more times as the others arrive
+  (tcp-input c (peer-seg their ours +tcp-ack+ (v)) 10)
+  (tcp-input c (peer-seg their ours +tcp-ack+ (v)) 11)
+  (ok "two duplicate acks resend nothing" (null (tcp-output c 12)))
+  (tcp-input c (peer-seg their ours +tcp-ack+ (v)) 13)
+  (let ((r (mapcar #'mine (tcp-output c 14))))
+    (ok "the third resends the hole at once, long before the RTO"
+        (and (= 1 (length r)) (= (seg-seq (first r)) ours) (= 100 (length (seg-data (first r))))))))
 
 (head "the window")
 (multiple-value-bind (c their ours) (open-conn)
