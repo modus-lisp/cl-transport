@@ -49,6 +49,18 @@
                              (:file "turn")           ; RFC 5766/8656 relay client
                              (:file "ice")))))        ; RFC 8445 agent: candidates, checks, selection
 
+;;; Portable UDP and TCP on sb-bsd-sockets -- SBCL and hosted modus, which provides
+;;; the same API -- with no usocket and no threads: a multi-peer UDP endpoint, a
+;;; buffered TCP socket with deadline reads, and a wait across both.
+(defsystem "cl-transport/sockets"
+  :description "UDP (one socket, many peers) and TCP (buffered, deadline reads) on
+                sb-bsd-sockets; runs on SBCL and on modus."
+  :version "0.1.0"
+  :author "ynniv"
+  :license "MIT"
+  :depends-on ((:feature :sbcl (:require "sb-bsd-sockets")))
+  :components ((:module "src" :components ((:file "sockets")))))
+
 ;;; A TCP client engine with no I/O: segments in, segments out, time passed in.  For
 ;;; links that carry IP packets but have no kernel TCP behind them (an overlay that
 ;;; tunnels IPv6, a bare-metal NIC).  No dependencies at all, so modus can take it.
