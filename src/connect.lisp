@@ -15,6 +15,11 @@
 ;;;; USABLE waits for the socket to become writable or the timeout to pass.  A socket
 ;;;; that became writable because the connect FAILED is told apart by its peer name,
 ;;;; which does not exist on an unconnected socket.
+;;;;
+;;;; ON MODUS THE CONNECT IS THE KERNEL'S.  modus's sb-bsd-sockets has no non-blocking
+;;;; mode (its shim has no (SETF NON-BLOCKING-MODE)), so there a connect blocks until it
+;;;; finishes or the kernel gives up, exactly as cl-transport/sockets' TCP-CONNECT does.
+;;;; modus pushes :SB-BSD-SOCKETS and not :SBCL, which is what #-sbcl selects.
 
 (defpackage #:cl-transport.connect
   (:use #:cl)
@@ -22,6 +27,7 @@
 
 (in-package #:cl-transport.connect)
 
+#+sbcl
 (defun %connect-within (host port timeout)
   "A connected socket and its binary stream, or an error after TIMEOUT seconds."
   (let* ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp))
@@ -32,7 +38,7 @@
                             (ignore-errors (sb-bsd-sockets:socket-close sock)))))
       (setf (sb-bsd-sockets:non-blocking-mode sock) t)
       (handler-case (sb-bsd-sockets:socket-connect sock address port)
-        (sb-bsd-sockets::operation-in-progress () nil))
+        (sb-bsd-sockets:operation-in-progress () nil))
       (unless (sb-sys:wait-until-fd-usable fd :output timeout)
         (error "cl-transport: connect to ~a:~d timed out after ~a s" host port timeout))
       ;; A failed connect is writable too.  Only a connected socket has a peer name.
@@ -48,6 +54,9 @@
   "Connect to HOST:PORT.  Returns (values SOCKET STREAM): a binary stream, and the
    socket to close when the stream is done with.  Signals if the connect fails or runs
    past TIMEOUT seconds, when one is given."
+  #+sbcl
   (if timeout
       (%connect-within host port timeout)
-      (cl-transport.listeners:open-connection :host host :port port)))
+      (cl-transport.listeners:open-connection :host host :port port))
+  #-sbcl
+  (progn timeout (cl-transport.listeners:open-connection :host host :port port)))

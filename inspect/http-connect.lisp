@@ -220,7 +220,9 @@
       (ok "a stream quiet past the dial timeout is not cut off" (bytes->string got) "quiet"))
     (funcall closer))
 
-  ;; 9. a connect that cannot finish is an error within its timeout, not a hang
+  ;; 9. a connect that cannot finish is an error within its timeout, not a hang.  SBCL
+  ;; only: on modus a connect is bounded by the kernel (see src/connect.lisp).
+  #+sbcl
   (let ((started (get-internal-real-time)))
     (ok "a connect past its timeout signals, and does not hang"
         (let ((r (handler-case (progn (cl-transport.connect:connect-tcp "10.255.255.1" 9
