@@ -9,10 +9,12 @@
 (require :asdf)
 (let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (when (probe-file ql) (load ql)))
-(asdf:initialize-source-registry
- (let ((here (make-pathname :name nil :type nil :defaults *load-truename*)))
-   `(:source-registry (:tree ,(merge-pathnames "../../" here))
-                      (:exclude "vendor") (:exclude "deps") :inherit-configuration)))
+;; This directory only, the way the other suites find the system: it needs nothing else,
+;; and a tree scan of the workspace can find an older copy of cl-transport vendored
+;; somewhere else first.  (modus's ASDF also has no INITIALIZE-SOURCE-REGISTRY.)
+(push (make-pathname :name nil :type nil
+                     :defaults (merge-pathnames "../" (make-pathname :name nil :type nil :defaults *load-truename*)))
+      asdf:*central-registry*)
 (handler-bind ((warning #'muffle-warning))
   (let ((*standard-output* (make-broadcast-stream))) (asdf:load-system :cl-transport)))
 
@@ -216,7 +218,7 @@
 (head "DIAL declares the carrier itself")
 (cl-transport.gate:clear-policy)
 (cl-transport.gate:require-carrier "*" :any "test")
-;; No encapsulation involved: DIAL binds *CARRIER* around the connection it makes, so
+;; No hook involved: DIAL binds *CARRIER* around the connection it makes, so
 ;; a dialled connection satisfies `via any' and a hand-rolled socket does not.
 (ok "a dialled connection satisfies `via any'"
     (let ((r (handler-case (multiple-value-bind (s closer)

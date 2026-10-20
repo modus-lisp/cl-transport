@@ -7,7 +7,7 @@
 ;;;; without either of them knowing.  So does any library out of quicklisp that we have
 ;;;; never read, which is the case a gate exists for.
 ;;;;
-;;;; That is why this is an ENCAPSULATION rather than a function the callers opt into.
+;;;; That is why this is a HOOK on those operators rather than a function the callers opt into.
 ;;;; Asking a dozen call sites to route through the gate would police exactly the code
 ;;;; that agreed to be policed, which is the code least likely to surprise anybody.
 
@@ -76,7 +76,7 @@
               (setf (gethash key *decisions*) (list action why))
               (values action why)))))))
 
-;;; ---- the encapsulations -----------------------------------------------------
+;;; ---- the checks the hooks run ------------------------------------------------
 
 (defun %port-of (args)
   (let ((p (second args))) (if (integerp p) p (or p 0))))
@@ -110,59 +110,104 @@
         (error 'blocked :principal who :host host :port port :rule why))
       t)))
 
+;;; ---- hooks, in standard Common Lisp ---------------------------------------------
+;;;
+;;; The gate runs around three operators it does not own.  It used SB-INT:ENCAPSULATE,
+;;; which is SBCL's internal package: no other Lisp has it, so on modus the whole system
+;;; failed at READ time.  Two standard mechanisms do the same job, chosen per operator
+;;; when the gate is armed, because whether an operator is a generic function is a
+;;; property of the implementation and not of the API:
+;;;
+;;;   a GENERIC FUNCTION gets an :AROUND method (EVAL of a DEFMETHOD, so no MOP), and
+;;;     disarming removes exactly that method with REMOVE-METHOD.  Replacing a generic
+;;;     function's definition instead would break the next DEFMETHOD on it.  On SBCL this
+;;;     is SOCKET-CONNECT and SOCKET-SEND.
+;;;   a PLAIN FUNCTION is replaced through (SETF FDEFINITION), its original kept and put
+;;;     back on disarm -- only if the definition is still ours, so a later redefinition
+;;;     is never undone.  On SBCL this is GET-HOST-BY-NAME; on modus, all three.
+;;;
+;;; Either way the wrapper is called as (wrapper next arg...), NEXT calling the operator
+;;; with the same arguments.
+
+(defvar *hooks* '()
+  "One entry per installed hook: (name :method method) or (name :function original wrapper).")
+
+(defun %hooked-p (name) (and (assoc name *hooks*) t))
+
+(defun %hook (name required specializer wrapper)
+  "Run WRAPPER around the operator NAME.  REQUIRED is how many required parameters the
+   operator takes and SPECIALIZER the class its first is specialized on, for the case
+   where it is a generic function.  Idempotent."
+  (unless (%hooked-p name)
+    (let ((f (fdefinition name)))
+      (if (typep f 'generic-function)
+          (let* ((rest (loop for i from 1 below required
+                             collect (intern (format nil "ARG~d" i) '#:cl-transport.gate)))
+                 (method (eval `(defmethod ,name :around ((arg0 ,specializer) ,@rest &rest more)
+                                  (apply ',wrapper
+                                         (lambda (&rest args) (apply #'call-next-method args))
+                                         arg0 ,@rest more)))))
+            (push (list name :method method) *hooks*))
+          (let ((ours (lambda (&rest args) (apply wrapper f args))))
+            (setf (fdefinition name) ours)
+            (push (list name :function f ours) *hooks*)))))
+  t)
+
+(defun %unhook (name)
+  (let ((entry (assoc name *hooks*)))
+    (when entry
+      (destructuring-bind (kind thing &optional ours) (rest entry)
+        (ecase kind
+          (:method (remove-method (fdefinition name) thing))
+          (:function (when (eq (fdefinition name) ours)
+                       (setf (fdefinition name) thing)))))
+      (setf *hooks* (remove entry *hooks*))))
+  t)
+
 (defun arm ()
   "Install the gate.  Idempotent."
-  (unless (sb-int:encapsulated-p 'sb-bsd-sockets:socket-connect 'transport-gate)
-    (sb-int:encapsulate
-     'sb-bsd-sockets:socket-connect 'transport-gate
-     (lambda (fn socket &rest args)
-       ;; A LOCAL SOCKET IS NOT A DEPARTURE.  Unix-domain connects take a path rather
-       ;; than an address and never leave the machine; glass's control socket, its
-       ;; seats and the local viewer are all on one, and recording them would bury the
-       ;; connections that matter under thousands that cannot go anywhere.
-       (if (stringp (first args))
-           (apply fn socket args)
-           (progn (%check (first args) (%port-of args))
-                  (apply fn socket args))))))
+  (%hook 'sb-bsd-sockets:socket-connect 1 'sb-bsd-sockets:socket
+         (lambda (fn socket &rest args)
+           ;; A LOCAL SOCKET IS NOT A DEPARTURE.  Unix-domain connects take a path rather
+           ;; than an address and never leave the machine; glass's control socket, its
+           ;; seats and the local viewer are all on one, and recording them would bury
+           ;; the connections that matter under thousands that cannot go anywhere.
+           (if (stringp (first args))
+               (apply fn socket args)
+               (progn (%check (first args) (%port-of args))
+                      (apply fn socket args)))))
   ;; UDP.  A datagram socket usually never connects: the destination rides on each
   ;; SOCKET-SEND, which is how ICE and TURN reach the world, and a gate that only
   ;; watched CONNECT could not see any of it -- the largest hole in the first cut of
   ;; this, and the one that mattered most, since that is the path to a phone.
-  (unless (sb-int:encapsulated-p 'sb-bsd-sockets:socket-send 'transport-gate)
-    (sb-int:encapsulate
-     'sb-bsd-sockets:socket-send 'transport-gate
-     (lambda (fn socket buffer length &rest args)
-       (let ((dest (getf args :address)))
-         ;; No :ADDRESS means the socket is connected and was gated when it connected.
-         (when (and dest (listp dest) (not (stringp (first dest))))
-           (%check-datagram (first dest) (or (second dest) 0)))
-         (apply fn socket buffer length args)))))
+  (%hook 'sb-bsd-sockets:socket-send 3 'sb-bsd-sockets:socket
+         (lambda (fn socket buffer length &rest args)
+           (let ((dest (getf args :address)))
+             ;; No :ADDRESS means the socket is connected and was gated when it connected.
+             (when (and dest (listp dest) (not (stringp (first dest))))
+               (%check-datagram (first dest) (or (second dest) 0)))
+             (apply fn socket buffer length args))))
   ;; Watched only so an address can be named -- see names.lisp.  Resolution is not
   ;; itself gated: a policy that let a name be looked up and then refused the
   ;; connection is easier to read in the log than one that fails at the resolver.
-  (unless (sb-int:encapsulated-p 'sb-bsd-sockets:get-host-by-name 'transport-gate)
-    (sb-int:encapsulate
-     'sb-bsd-sockets:get-host-by-name 'transport-gate
-     (lambda (fn name &rest args)
-       (let ((ent (apply fn name args)))
-         (when ent
-           (ignore-errors
-            (dolist (a (sb-bsd-sockets:host-ent-addresses ent)) (note-name a name))))
-         ent))))
+  (%hook 'sb-bsd-sockets:get-host-by-name 1 't
+         (lambda (fn name &rest args)
+           (let ((ent (apply fn name args)))
+             (when ent
+               (ignore-errors
+                (dolist (a (sb-bsd-sockets:host-ent-addresses ent)) (note-name a name))))
+             ent)))
   t)
 
 (defun disarm ()
   "Remove the gate.  The record and the rules survive it."
-  (when (sb-int:encapsulated-p 'sb-bsd-sockets:socket-connect 'transport-gate)
-    (sb-int:unencapsulate 'sb-bsd-sockets:socket-connect 'transport-gate))
-  (when (sb-int:encapsulated-p 'sb-bsd-sockets:socket-send 'transport-gate)
-    (sb-int:unencapsulate 'sb-bsd-sockets:socket-send 'transport-gate))
-  (when (sb-int:encapsulated-p 'sb-bsd-sockets:get-host-by-name 'transport-gate)
-    (sb-int:unencapsulate 'sb-bsd-sockets:get-host-by-name 'transport-gate))
+  (%unhook 'sb-bsd-sockets:socket-connect)
+  (%unhook 'sb-bsd-sockets:socket-send)
+  (%unhook 'sb-bsd-sockets:get-host-by-name)
   t)
 
 (defun armed-p ()
-  (and (sb-int:encapsulated-p 'sb-bsd-sockets:socket-connect 'transport-gate) t))
+  (%hooked-p 'sb-bsd-sockets:socket-connect))
 
 
 ;;; ---- boot -------------------------------------------------------------------
