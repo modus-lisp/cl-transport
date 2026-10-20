@@ -178,6 +178,8 @@
     (rule (rule-source thing))
     (requirement (format nil "~a; via ~(~a~)" (requirement-source thing)
                          (requirement-carrier thing)))
+    ;; A record a worker sent across a channel carries the source as text already.
+    (string thing)
     (t nil)))
 
 ;;; ---- the document -----------------------------------------------------------

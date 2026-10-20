@@ -64,6 +64,10 @@
 (defvar *decisions-lock* (sb-thread:make-mutex :name "gate-decisions"))
 
 (defun cached-decide (principal host port carrier)
+  ;; The cache is the owner's.  On modus a worker decides each datagram itself: a
+  ;; verdict written into the shared table would be a store of its own objects.
+  (unless (%gate-owner-p)
+    (return-from cached-decide (decide principal host port nil carrier)))
   (let ((key (list principal carrier host port)))
     (sb-thread:with-mutex (*decisions-lock*)
       (unless (eql *decisions-generation* *policy-generation*)
@@ -104,9 +108,14 @@
         ;; Recorded once per distinct (principal, host, port) rather than per packet:
         ;; a refused media stream would otherwise fill the log with one line per frame
         ;; and push everything else out of it.
-        (unless (gethash (list :logged who host port) *decisions*)
-          (setf (gethash (list :logged who host port) *decisions*) t)
-          (note-connection who host (names-for host) port action why *carrier*))
+        (let ((key (list :logged who host port)))
+          (if (%gate-owner-p)
+              (unless (gethash key *decisions*)
+                (setf (gethash key *decisions*) t)
+                (note-connection who host (names-for host) port action why *carrier*))
+              (unless (member key *local-logged* :test #'equal)
+                (push key *local-logged*)
+                (note-connection who host (names-for host) port action why *carrier*))))
         (error 'blocked :principal who :host host :port port :rule why))
       t)))
 
@@ -165,7 +174,9 @@
   t)
 
 (defun arm ()
-  "Install the gate.  Idempotent."
+  "Install the gate.  Idempotent.  The thread that arms it owns its bookkeeping (on
+   modus that must be the main thread -- see gate-channel.lisp)."
+  (%gate-adopt-owner)
   (%hook 'sb-bsd-sockets:socket-connect 1 'sb-bsd-sockets:socket
          (lambda (fn socket &rest args)
            ;; A LOCAL SOCKET IS NOT A DEPARTURE.  Unix-domain connects take a path rather
@@ -201,6 +212,7 @@
 
 (defun disarm ()
   "Remove the gate.  The record and the rules survive it."
+  (%gate-drain)
   (%unhook 'sb-bsd-sockets:socket-connect)
   (%unhook 'sb-bsd-sockets:socket-send)
   (%unhook 'sb-bsd-sockets:get-host-by-name)

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 2
 out=$(mktemp) || exit 2
 trap 'rm -f "$out"' EXIT
 rc=0
-for f in sockets tcp transport-gate gate-hooks http-connect socks-client; do
+for f in sockets tcp transport-gate gate-hooks gate-threads http-connect socks-client; do
   printf '\n== inspect/%s.lisp\n' "$f"
   if sbcl --script "inspect/$f.lisp" >"$out" 2>&1; then status=0; else status=$?; fi
   grep -v '^;' "$out" | tail -3

@@ -31,8 +31,19 @@
    holding every connection it ever made.")
 
 (defun note-connection (principal host names port action rule &optional (carrier *carrier*))
+  "Record a connection.  The owner records it; on modus a worker sends it to the owner
+   instead, with the rule as its source text (an object cannot cross a channel) -- see
+   gate-channel.lisp."
+  (if (%gate-owner-p)
+      (progn (%gate-drain)
+             (%note-connection (get-universal-time) principal host names port action rule
+                               carrier))
+      (%gate-send (list :connection (get-universal-time) principal host names port action
+                        (and rule (decision-source rule)) carrier))))
+
+(defun %note-connection (at principal host names port action rule carrier)
   (sb-thread:with-mutex (*record-lock*)
-    (push (%make-connection :at (get-universal-time) :principal principal :host host
+    (push (%make-connection :at at :principal principal :host host
                             :names names :port port :action action :rule rule
                             :carrier carrier)
           *connections*)
@@ -62,6 +73,7 @@
 
    AS is :OBJECT (the default) or :PLIST -- see CONNECTION-PLIST for why the second
    exists."
+  (%gate-drain)
   (let ((all (sb-thread:with-mutex (*record-lock*) (copy-list *connections*))))
     (when principal
       (setf all (remove-if-not (lambda (c) (glob-match-p principal (connection-principal c))) all)))
@@ -71,6 +83,8 @@
     (if (eq as :plist) (mapcar #'connection-plist all) all)))
 
 (defun clear-connections ()
+  ;; Drained first, so a record sent before the clear does not reappear after it.
+  (%gate-drain)
   (sb-thread:with-mutex (*record-lock*) (setf *connections* '())) t)
 
 (defun report (&key (stream *standard-output*) (limit 40) principal action)
@@ -86,6 +100,9 @@
         (format stream "~&cl-transport: nothing recorded~@[ for ~a~]~%" principal)
         (progn
           (format stream "~&~a connection~:p, most recent first~%" (length cs))
+          (when (plusp *gate-dropped*)
+            (format stream "  (~d more dropped: worker threads filled the channel to the owner)~%"
+                    *gate-dropped*))
           (dolist (c cs)
             (multiple-value-bind (s m h) (decode-universal-time (connection-at c))
               (format stream "  ~2,'0d:~2,'0d:~2,'0d  ~5a  ~22a  ~28a  via ~(~a~)~@[  (~a)~]~%"

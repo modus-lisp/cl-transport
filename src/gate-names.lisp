@@ -38,18 +38,34 @@
         (t (princ-to-string address))))
 
 (defun note-name (address name)
-  "Record that ADDRESS was resolved from NAME."
+  "Record that ADDRESS was resolved from NAME.  On modus a worker keeps it for itself
+   and sends it to the owner -- see gate-channel.lisp."
   (when (and address name)
     (let ((key (address-string address)))
-      (sb-thread:with-mutex (*names-lock*)
-        (let ((have (gethash key *names*)))
-          (when (or have (< (hash-table-count *names*) *name-limit*))
-            (setf (gethash key *names*)
-                  (cons name (remove name have :test #'string-equal)))))))))
+      (if (%gate-owner-p)
+          (progn (%gate-drain) (%note-name-key key name))
+          (progn
+            (let ((have (cdr (assoc key *local-names* :test #'string=))))
+              (setf *local-names*
+                    (acons key (cons name (remove name have :test #'string-equal))
+                           (remove key *local-names* :key #'car :test #'string=))))
+            (%gate-send (list :name key name)))))))
+
+(defun %note-name-key (key name)
+  (sb-thread:with-mutex (*names-lock*)
+    (let ((have (gethash key *names*)))
+      (when (or have (< (hash-table-count *names*) *name-limit*))
+        (setf (gethash key *names*)
+              (cons name (remove name have :test #'string-equal)))))))
 
 (defun names-for (address-string)
-  "Every hostname ADDRESS-STRING has been seen resolved from, most recent first."
-  (sb-thread:with-mutex (*names-lock*) (copy-list (gethash address-string *names*))))
+  "Every hostname ADDRESS-STRING has been seen resolved from, most recent first: this
+   computation's own first (on modus), then the shared ones."
+  (%gate-drain)
+  (let ((local (cdr (assoc address-string *local-names* :test #'string=)))
+        (shared (sb-thread:with-mutex (*names-lock*) (copy-list (gethash address-string *names*)))))
+    (if local (remove-duplicates (append local shared) :test #'string-equal :from-end t) shared)))
 
 (defun forget-names ()
+  (%gate-drain)
   (sb-thread:with-mutex (*names-lock*) (clrhash *names*)))
