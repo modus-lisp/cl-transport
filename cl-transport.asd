@@ -2,10 +2,10 @@
 ;;;;
 ;;;; A uniform outbound transport: one DIAL that returns a binary stream + a close
 ;;;; thunk, whether the bytes go direct, through a SOCKS5 proxy, or through an HTTP
-;;;; proxy's CONNECT — plus a registry
-;;;; for optional pluggable backends (e.g. native Tor via the separate cl-tor-transport
-;;;; system).  Standalone: needs only usocket; no Tor/TLS/crypto stack unless a
-;;;; provider is loaded.
+;;;; proxy's CONNECT — plus a registry for optional pluggable backends (e.g. native Tor
+;;;; via the separate cl-tor-transport system).  Standalone: needs nothing beyond SBCL
+;;;; (sb-bsd-sockets, sb-thread); no usocket, no bordeaux-threads, no Tor/TLS/crypto
+;;;; stack unless a provider is loaded.
 
 ;;; The listeners, on their own.  glass needs exactly this and nothing else here, and
 ;;; glass has always been free of quicklisp -- which is what lets it be the display
@@ -74,12 +74,12 @@
   :components ((:module "src" :components ((:file "tcp")))))
 
 (defsystem "cl-transport"
-  :description "Uniform outbound transport (direct / SOCKS5 / pluggable backends) with
-                a runtime backend registry.  Portable toward modus."
+  :description "Uniform outbound transport (direct / SOCKS5 / HTTP CONNECT / pluggable
+                backends) with a runtime backend registry.  SBCL only, no third-party code."
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("usocket" "bordeaux-threads" "sb-bsd-sockets" "cl-transport/listeners")
+  :depends-on ("sb-bsd-sockets" "cl-transport/listeners")
   :serial t
   :components
   ((:module "src"
@@ -91,6 +91,7 @@
      (:file "gate-names")    ; addresses learn the names they were resolved from
      (:file "gate-policy")   ; rules, carrier requirements, the config document
      (:file "gate-record")   ; what was asked for, and what was decided
+     (:file "connect")       ; the one TCP connect every carrier goes through
      (:file "socks-client")  ; SOCKS5 CONNECT client (external proxy backend)
      (:file "http-connect-client")  ; HTTP CONNECT client (HTTPS_PROXY, corporate egress)
      (:file "transport")     ; DIAL + REGISTER-TRANSPORT (outbound)

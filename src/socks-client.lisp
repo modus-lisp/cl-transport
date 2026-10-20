@@ -8,7 +8,8 @@
 
 (defpackage #:cl-transport.socks
   (:use #:cl)
-  (:local-nicknames (#:u #:cl-transport.util))
+  (:local-nicknames (#:u #:cl-transport.util)
+                    (#:cc #:cl-transport.connect))
   (:export #:socks5-connect))
 
 (in-package #:cl-transport.socks)
@@ -22,9 +23,7 @@
                                       (timeout 20))
   "CONNECT to HOST:PORT via the SOCKS5 proxy at PROXY-HOST:PROXY-PORT.  Returns
    (values stream closer): a binary stream and a thunk that tears the connection down."
-  (let* ((sock (usocket:socket-connect proxy-host proxy-port
-                                       :element-type '(unsigned-byte 8) :timeout timeout))
-         (s (usocket:socket-stream sock)))
+  (multiple-value-bind (sock s) (cc:connect-tcp proxy-host proxy-port :timeout timeout)
     (handler-case
         (progn
           ;; greeting: version 5, one method, no-auth (0x00)
@@ -44,7 +43,7 @@
             (%read-n s (ecase atyp (1 4) (4 16)
                          (3 (aref (%read-n s 1) 0))))   ; bound addr
             (%read-n s 2))                                ; bound port
-          (values s (lambda () (ignore-errors (usocket:socket-close sock)))))
+          (values s (lambda () (ignore-errors (sb-bsd-sockets:socket-close sock)))))
       (serious-condition (e)
-        (ignore-errors (usocket:socket-close sock))
+        (ignore-errors (sb-bsd-sockets:socket-close sock))
         (error e)))))

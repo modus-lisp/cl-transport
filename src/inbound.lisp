@@ -7,7 +7,7 @@
 ;;;; ON-CONNECTION, called as (funcall on-connection stream peer-plist).  Callers get a
 ;;;; uniform "hand me each inbound stream" and never branch on how reachability happens.
 ;;;;
-;;;;   :tcp   a plain local listener (usocket accept loop)     — built in
+;;;;   :tcp   a plain local listener (sb-bsd-sockets accept loop) — built in
 ;;;;   <other> a pluggable inbound backend (REGISTER-LISTENER) — e.g. :frp via cl-frpc,
 ;;;;           which gives a NAT'd host a public endpoint through an frp relay.
 ;;;;
@@ -50,30 +50,39 @@
               (error "cl-transport: no inbound backend registered for ~s — load its ~
                       provider first (e.g. the cl-frpc system for :frp)." backend))))))
 
+(defun %peer-plist (sock)
+  "The peer's address and port as the plist an on-connection callback gets, or NIL
+   fields where the kernel will not say."
+  (multiple-value-bind (address port) (ignore-errors (sb-bsd-sockets:socket-peername sock))
+    (list :host (and address (format nil "~{~d~^.~}" (coerce address 'list)))
+          :port port)))
+
 (defun %tcp-listen (on-connection opts)
   "Built-in :TCP inbound: bind a local listener and hand each accepted connection to
-   ON-CONNECTION on its own thread."
+   ON-CONNECTION on its own thread.  On sb-bsd-sockets and sb-thread, so an inbound
+   listener needs nothing beyond SBCL."
   (destructuring-bind (&key (host "0.0.0.0") port &allow-other-keys) opts
     (unless port (error "cl-transport: :tcp expose needs :port"))
-    (let* ((server (usocket:socket-listen host port :element-type '(unsigned-byte 8)
-                                                     :reuse-address t))
+    (let* ((server (cl-transport.listeners:tcp-listen port :address host))
            (stop nil))
       (labels ((serve (sock)
-                 (bt:make-thread
+                 (sb-thread:make-thread
                   (lambda ()
                     (unwind-protect
-                         (funcall on-connection (usocket:socket-stream sock)
-                                  (list :host (ignore-errors (usocket:get-peer-address sock))
-                                        :port (ignore-errors (usocket:get-peer-port sock))))
-                      (ignore-errors (usocket:socket-close sock))))
+                         (funcall on-connection
+                                  (sb-bsd-sockets:socket-make-stream
+                                   sock :input t :output t :element-type '(unsigned-byte 8)
+                                        :buffering :full)
+                                  (%peer-plist sock))
+                      (ignore-errors (sb-bsd-sockets:socket-close sock))))
                   :name "cl-transport-tcp-conn"))
                (accept-loop ()
                  (loop until stop do
                    (handler-case
-                       (serve (usocket:socket-accept server :element-type '(unsigned-byte 8)))
+                       (serve (sb-bsd-sockets:socket-accept server))
                      (error () (unless stop (sleep 0.05)))))))
-        (let ((thread (bt:make-thread #'accept-loop :name "cl-transport-tcp-accept")))
+        (let ((thread (sb-thread:make-thread #'accept-loop :name "cl-transport-tcp-accept")))
           (lambda ()
             (setf stop t)
-            (ignore-errors (usocket:socket-close server))
-            (ignore-errors (bt:destroy-thread thread))))))))
+            (ignore-errors (sb-bsd-sockets:socket-close server))
+            (ignore-errors (sb-thread:terminate-thread thread))))))))

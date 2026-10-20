@@ -5,7 +5,7 @@
 ;;;; The whole point: callers (e.g. cl-consensus's connect-peer) get a uniform
 ;;;; binary stream + a close thunk and never branch on how the bytes travel.
 ;;;;
-;;;;   :direct  plain TCP (usocket)                    — clearnet, no privacy
+;;;;   :direct  plain TCP (sb-bsd-sockets)             — clearnet, no privacy
 ;;;;   :socks5  through an external SOCKS5 proxy        — system tor / any proxy
 ;;;;   :http-connect  through an HTTP proxy's CONNECT   — HTTPS_PROXY, corporate egress
 ;;;;   <other>  a pluggable backend registered at runtime (REGISTER-TRANSPORT)
@@ -19,7 +19,7 @@
   (:use #:cl)
   (:local-nicknames (#:socks #:cl-transport.socks)
                     (#:hc #:cl-transport.http-connect)
-                    (#:bt #:bordeaux-threads))
+                    (#:cc #:cl-transport.connect))
   (:export #:dial #:*default-transport* #:*socks-proxy*
            #:*http-proxy* #:*http-proxy-authorization*
            #:register-transport #:transport-available-p
@@ -85,10 +85,8 @@
   (let ((cl-transport.gate:*carrier* transport))
    (case transport
     (:direct
-     (let ((sock (usocket:socket-connect host port
-                                         :element-type '(unsigned-byte 8) :timeout timeout)))
-       (values (usocket:socket-stream sock)
-               (lambda () (ignore-errors (usocket:socket-close sock))))))
+     (multiple-value-bind (sock stream) (cc:connect-tcp host port :timeout timeout)
+       (values stream (lambda () (ignore-errors (sb-bsd-sockets:socket-close sock))))))
     (:socks5
      (let ((proxy (or proxy *socks-proxy*)))
        (socks:socks5-connect host port :proxy-host (car proxy) :proxy-port (cdr proxy)

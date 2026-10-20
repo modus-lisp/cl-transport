@@ -11,7 +11,8 @@
 
 (defpackage #:cl-transport.http-connect
   (:use #:cl)
-  (:local-nicknames (#:u #:cl-transport.util))
+  (:local-nicknames (#:u #:cl-transport.util)
+                    (#:cc #:cl-transport.connect))
   (:export #:http-connect))
 
 (in-package #:cl-transport.http-connect)
@@ -42,26 +43,24 @@
    (values stream closer): a binary stream carrying the tunnel and a thunk that tears
    it down.  PROXY-AUTHORIZATION, when given, is sent as the Proxy-Authorization
    header value (for example `Basic <base64>').  Signals if the proxy refuses."
-  (let* ((sock (usocket:socket-connect proxy-host proxy-port
-                                       :element-type '(unsigned-byte 8) :timeout timeout))
-         (s (usocket:socket-stream sock))
-         (target (format nil "~a:~d" host port)))
-    (handler-case
-        (progn
-          (write-sequence
-           (u:ascii->bytes
-            (format nil "CONNECT ~a HTTP/1.1~c~cHost: ~a~c~c~@[Proxy-Authorization: ~a~c~c~]~c~c"
-                    target #\Return #\Newline target #\Return #\Newline
-                    proxy-authorization #\Return #\Newline #\Return #\Newline))
-           s)
-          (force-output s)
-          (let ((status (%status-code (%read-line-crlf s))))
-            ;; Every header line up to the blank one is read and discarded: the tunnel
-            ;; starts after it, whatever the proxy sent.
-            (loop for line = (%read-line-crlf s) until (zerop (length line)))
-            (unless (<= 200 status 299)
-              (error "http-connect: proxy refused ~a with ~d" target status)))
-          (values s (lambda () (ignore-errors (usocket:socket-close sock)))))
-      (serious-condition (e)
-        (ignore-errors (usocket:socket-close sock))
-        (error e)))))
+  (multiple-value-bind (sock s) (cc:connect-tcp proxy-host proxy-port :timeout timeout)
+   (let ((target (format nil "~a:~d" host port)))
+      (handler-case
+          (progn
+            (write-sequence
+             (u:ascii->bytes
+              (format nil "CONNECT ~a HTTP/1.1~c~cHost: ~a~c~c~@[Proxy-Authorization: ~a~c~c~]~c~c"
+                      target #\Return #\Newline target #\Return #\Newline
+                      proxy-authorization #\Return #\Newline #\Return #\Newline))
+             s)
+            (force-output s)
+            (let ((status (%status-code (%read-line-crlf s))))
+              ;; Every header line up to the blank one is read and discarded: the tunnel
+              ;; starts after it, whatever the proxy sent.
+              (loop for line = (%read-line-crlf s) until (zerop (length line)))
+              (unless (<= 200 status 299)
+                (error "http-connect: proxy refused ~a with ~d" target status)))
+            (values s (lambda () (ignore-errors (sb-bsd-sockets:socket-close sock)))))
+        (serious-condition (e)
+          (ignore-errors (sb-bsd-sockets:socket-close sock))
+          (error e))))))

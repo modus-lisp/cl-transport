@@ -1,14 +1,15 @@
 ;;;; http-connect.lisp — the :HTTP-CONNECT carrier, against a real CONNECT proxy.
 ;;;;
-;;;;   sbcl --load ~/quicklisp/setup.lisp --script inspect/http-connect.lisp
+;;;;   sbcl --script inspect/http-connect.lisp
 ;;;;
-;;;; Needs usocket and bordeaux-threads, which cl-transport itself needs; quicklisp
-;;;; supplies them.  Every socket is 127.0.0.1 on an ephemeral port.  The proxy is a
+;;;; Nothing beyond SBCL: the carrier, the proxy and the echo server are all sb-bsd-sockets
+;;;; and sb-thread.  Every socket is 127.0.0.1 on an ephemeral port.  The proxy is a
 ;;;; loopback thread that speaks CONNECT and then copies bytes, and it records what it
 ;;;; was asked, so each check is about what crossed the wire and not about what this
 ;;;; file meant to send.
 
 (require :asdf)
+(require :sb-bsd-sockets)
 (push (make-pathname :name nil :type nil
                      :defaults (merge-pathnames "../" (make-pathname :name nil :type nil :defaults *load-truename*)))
       asdf:*central-registry*)
@@ -26,21 +27,33 @@
 (defun crlf-bytes (s) (map '(vector (unsigned-byte 8)) #'char-code s))
 (defun bytes->string (v) (map 'string #'code-char v))
 
+;;; ---- loopback listeners -----------------------------------------------------------
+
+(defun listen-loopback ()
+  "A listening socket on 127.0.0.1 and its port."
+  (let ((srv (cl-transport.listeners:tcp-listen 0 :address "127.0.0.1")))
+    (values srv (nth-value 1 (sb-bsd-sockets:socket-name srv)))))
+
+(defun accept-stream (srv)
+  "The next connection on SRV: (values socket binary-stream)."
+  (let ((c (sb-bsd-sockets:socket-accept srv)))
+    (values c (sb-bsd-sockets:socket-make-stream c :input t :output t
+                                                    :element-type '(unsigned-byte 8)
+                                                    :buffering :full))))
+
 ;;; ---- the echo target --------------------------------------------------------------
 
 (defun start-echo ()
-  (let* ((srv (usocket:socket-listen "127.0.0.1" 0 :reuse-address t))
-         (port (usocket:get-local-port srv)))
-    (bt:make-thread
+  (multiple-value-bind (srv port) (listen-loopback)
+    (sb-thread:make-thread
      (lambda ()
        (loop
-         (let* ((c (usocket:socket-accept srv :element-type '(unsigned-byte 8)))
-                (s (usocket:socket-stream c)))
-           (bt:make-thread
+         (multiple-value-bind (c s) (accept-stream srv)
+           (sb-thread:make-thread
             (lambda ()
               (ignore-errors
                (loop for b = (read-byte s nil nil) while b do (write-byte b s) (finish-output s)))
-              (ignore-errors (usocket:socket-close c))))))))
+              (ignore-errors (sb-bsd-sockets:socket-close c))))))))
     port))
 
 ;;; ---- the CONNECT proxy ------------------------------------------------------------
@@ -68,14 +81,12 @@
   (ignore-errors (close to)))
 
 (defun start-proxy ()
-  (let* ((srv (usocket:socket-listen "127.0.0.1" 0 :reuse-address t))
-         (port (usocket:get-local-port srv)))
-    (bt:make-thread
+  (multiple-value-bind (srv port) (listen-loopback)
+    (sb-thread:make-thread
      (lambda ()
        (loop
-         (let* ((c (usocket:socket-accept srv :element-type '(unsigned-byte 8)))
-                (s (usocket:socket-stream c)))
-           (bt:make-thread
+         (multiple-value-bind (c s) (accept-stream srv)
+           (sb-thread:make-thread
             (lambda ()
               (ignore-errors
                (let ((header (read-header s)))
@@ -95,19 +106,21 @@
                            (colon (position #\: target :from-end t))
                            (host (subseq target 0 colon))
                            (tport (parse-integer target :start (1+ colon)))
-                           (up (usocket:socket-connect host tport
-                                                       :element-type '(unsigned-byte 8)))
-                           (us (usocket:socket-stream up))
+                           (up nil)
+                           (us (multiple-value-bind (sock stream)
+                                   (cl-transport.connect:connect-tcp host tport)
+                                 (setf up sock)
+                                 stream))
                            (reply (format nil "HTTP/1.1 200 Connection established~c~c~c~c"
                                           #\Return #\Newline #\Return #\Newline)))
                       (if (eq *mode* :early)
                           (write-sequence (crlf-bytes (concatenate 'string reply "EARLY")) s)
                           (write-sequence (crlf-bytes reply) s))
                       (finish-output s)
-                      (bt:make-thread (lambda () (pipe us s)))
+                      (sb-thread:make-thread (lambda () (pipe us s)))
                       (pipe s us)
-                      (ignore-errors (usocket:socket-close up)))))))
-              (ignore-errors (usocket:socket-close c))))))))
+                      (ignore-errors (sb-bsd-sockets:socket-close up)))))))
+              (ignore-errors (sb-bsd-sockets:socket-close c))))))))
     port))
 
 ;;; ---- checks -----------------------------------------------------------------------
@@ -183,5 +196,78 @@
         (ok "DIAL :http-connect tunnels through *http-proxy*" (bytes->string got) "dial"))
       (funcall closer))))
 
+;; ---- the direct carrier, the timeouts, and EXPOSE ------------------------------------
+
+(format t "~&== direct carrier, timeouts, and inbound~%")
+(let ((echo (start-echo)))
+  ;; 7. :direct, now on sb-bsd-sockets, carries bytes both ways
+  (multiple-value-bind (s closer) (cl-transport:dial "127.0.0.1" echo :transport :direct
+                                                      :timeout 10)
+    (write-sequence (crlf-bytes "direct") s) (finish-output s)
+    (let ((got (make-array 6 :element-type '(unsigned-byte 8))))
+      (read-sequence got s)
+      (ok ":direct dial carries bytes both ways" (bytes->string got) "direct"))
+    (funcall closer))
+
+  ;; 8. the dial timeout bounds the CONNECT, not the stream: a tunnel that is quiet for
+  ;; longer than the timeout is still open afterwards
+  (multiple-value-bind (s closer) (cl-transport:dial "127.0.0.1" echo :transport :direct
+                                                      :timeout 1)
+    (sleep 2)
+    (write-sequence (crlf-bytes "quiet") s) (finish-output s)
+    (let ((got (make-array 5 :element-type '(unsigned-byte 8))))
+      (read-sequence got s)
+      (ok "a stream quiet past the dial timeout is not cut off" (bytes->string got) "quiet"))
+    (funcall closer))
+
+  ;; 9. a connect that cannot finish is an error within its timeout, not a hang
+  (let ((started (get-internal-real-time)))
+    (ok "a connect past its timeout signals, and does not hang"
+        (let ((r (handler-case (progn (cl-transport.connect:connect-tcp "10.255.255.1" 9
+                                                                         :timeout 1)
+                                      :connected)
+                   (error () :failed))))
+          (and (member r '(:failed)) (< (- (get-internal-real-time) started)
+                                        (* 10 internal-time-units-per-second))
+               :failed-in-time))
+        :failed-in-time))
+
+  ;; 9b. a refused connect is an error straight away, not a timeout
+  (let ((closed (multiple-value-bind (srv p) (listen-loopback)
+                  (sb-bsd-sockets:socket-close srv) p)))
+    (ok "a refused connect signals at once"
+        (handler-case (progn (cl-transport.connect:connect-tcp "127.0.0.1" closed :timeout 5)
+                             :connected)
+          (error () :refused))
+        :refused))
+
+  ;; 10. EXPOSE :tcp hands each connection to the callback, with the peer's address
+  (let* ((seen nil)
+         (lock (sb-thread:make-mutex))
+         (port (multiple-value-bind (srv p) (listen-loopback)
+                 (sb-bsd-sockets:socket-close srv)
+                 p))
+         (closer (cl-transport:expose
+                  (lambda (stream peer)
+                    (sb-thread:with-mutex (lock) (push peer seen))
+                    (write-sequence (crlf-bytes "hello") stream) (finish-output stream))
+                  :backend :tcp :host "127.0.0.1" :port port)))
+    (unwind-protect
+         (multiple-value-bind (sock s) (cl-transport.connect:connect-tcp "127.0.0.1" port
+                                                                          :timeout 10)
+           (let ((got (make-array 5 :element-type '(unsigned-byte 8))))
+             (read-sequence got s)
+             (ok "EXPOSE :tcp sends each connection to the callback" (bytes->string got) "hello"))
+           (sb-bsd-sockets:socket-close sock))
+      (funcall closer))
+    (sleep 0.1)
+    (let ((peer (sb-thread:with-mutex (lock) (first seen))))
+      (ok "the callback is told the peer's address" (getf peer :host) "127.0.0.1")
+      (ok "the callback is told the peer's port" (and (integerp (getf peer :port)) t) t))))
+
+(ok "usocket is not loaded: the carriers need nothing beyond SBCL"
+    (and (find-package "USOCKET") t) nil)
+(ok "bordeaux-threads is not loaded either"
+    (and (find-package "BORDEAUX-THREADS") t) nil)
 (format t "~&~d passed, ~d failed~%" *pass* *fail*)
 (sb-ext:exit :code (if (zerop *fail*) 0 1))
