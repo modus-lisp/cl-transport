@@ -42,13 +42,14 @@
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad" "uiop")
+  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad" "uiop" "cl-transport/loop")
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "ice-packages")   ; the package + its byte helpers
                              (:file "stun")           ; RFC 5389 framing, attributes, integrity
                              (:file "turn")           ; RFC 5766/8656 relay client
-                             (:file "ice")))))        ; RFC 8445 agent: candidates, checks, selection
+                             (:file "ice")            ; RFC 8445 agent: candidates, checks, selection
+                             (:file "ice-loop")))))   ; the same agent on an event loop: no threads
 
 ;;; Portable UDP and TCP on sb-bsd-sockets -- SBCL and hosted modus, which provides
 ;;; the same API -- with no usocket and no threads: a multi-peer UDP endpoint, a
@@ -61,6 +62,17 @@
   :license "MIT"
   :depends-on ((:feature :sbcl (:require "sb-bsd-sockets")))
   :components ((:module "src" :components ((:file "sockets")))))
+
+;;; One thread, many sockets: an event loop over /sockets -- watches, timers, posted work.
+;;; What a board with twelve thread slots on one core runs its network on.
+(defsystem "cl-transport/loop"
+  :description "A single-threaded event loop (socket watches, timers, cross-thread POST) over
+                cl-transport/sockets; runs on SBCL and on modus."
+  :version "0.1.0"
+  :author "ynniv"
+  :license "MIT"
+  :depends-on ("cl-transport/sockets")
+  :components ((:module "src" :components ((:file "loop")))))
 
 ;;; A TCP client engine with no I/O: segments in, segments out, time passed in.  For
 ;;; links that carry IP packets but have no kernel TCP behind them (an overlay that

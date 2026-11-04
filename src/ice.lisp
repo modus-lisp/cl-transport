@@ -47,7 +47,11 @@
   (created-at (get-internal-real-time))
   (selected-at nil)                            ; when a peer was FIRST selected, or NIL if never
   (selected-first nil)                         ; the peer form at that first selection
-  (route-changes 0))                           ; times the route TYPE changed after that
+  (route-changes 0)                            ; times the route TYPE changed after that
+  ;; ---- on an event loop (ice-loop.lisp) ------------------------------------------------------
+  (loop nil)                                   ; the CL-TRANSPORT.LOOP:EVENT-LOOP it runs on, or NIL
+  (txns (make-hash-table :test 'equalp))       ; transaction id -> pending STUN/TURN request
+  (timers '()))                                ; this agent's live timers, cancelled at close
 
 (defun ice-silent-secs (agent)
   "Seconds since anything arrived from the peer, or NIL if nothing ever has."
@@ -330,9 +334,13 @@ TURN_SERVER/TURN_USER/TURN_PASS.  Best-effort — returns T on success.  MUST ru
                   (let ((seen (make-hash-table :test 'equal)))
                     (dolist (c (ice-agent-remote-candidates agent))
                       (let ((ip (ice-candidate-ip c)))
-                        (unless (gethash ip seen)
+                        (unless (or (gethash ip seen) (not (%ipv4-literal-p ip)))
                           (setf (gethash ip seen) t)
-                          (ignore-errors (turn-create-permission alloc ip))))))
+                          ;; said out loud: a permission that did not land is the silent
+                          ;; "relay on both sides, ice failed anyway"
+                          (format t "~&@@ turn permission ~a: ~a~%" ip
+                                  (if (ignore-errors (turn-create-permission alloc ip)) "ok" "FAILED"))
+                          (finish-output)))))
                   ;; Behind an frp/reverse-proxy TURN, the peer's packets reach the server from the
                   ;; PROXY's address, not the peer's — so pre-permit that IP (env TURN_RELAY_PEER) or
                   ;; the server drops the peer's first packet.  ICE-BIND-RELAY-PEER-ASYNC then binds a
@@ -350,6 +358,8 @@ BACKGROUND thread, so the recv loop never blocks waiting for its own response (t
 deadlock).  Once the channel binds, inbound peer traffic upgrades from Data indications to the
 low-overhead ChannelData framing automatically.  Idempotent per peer transport address."
   (let ((alloc (ice-agent-turn agent)))
+    (when (and alloc (ice-agent-loop agent))           ; on an event loop: no thread
+      (return-from ice-bind-relay-peer-async (%bind-relay-peer-on-loop agent alloc from-host from-port)))
     (when alloc
       (let* ((ip (format nil "~{~d~^.~}" (coerce from-host 'list)))
              (k (format nil "~a:~d" ip from-port)))
@@ -413,6 +423,20 @@ low-overhead ChannelData framing automatically.  Idempotent per peer transport a
           ((eql type +binding-success+)
            (unless (ice-agent-peer agent) (ice-note-peer agent peer-form))))))))
 
+;;; A browser's candidate list is mostly addresses we cannot use: mDNS names (random .local
+;;; hostnames standing in for host addresses) and IPv6.  Neither can be dialled from an IPv4
+;;; socket or given a TURN permission, and on modus the socket shim parsed a .local name as
+;;; garbage IPv4 (234.0.0.0, 135.234.0.0 ...) -- so a phone's 39 candidates cost 18 junk check
+;;; streams and junk CreatePermissions on every answer.  Only dotted IPv4 goes on the wire.
+(defun %ipv4-literal-p (s)
+  (and (stringp s)
+       (let ((parts 0) (digits 0))
+         (loop for ch across s
+               do (cond ((digit-char-p ch) (incf digits) (when (> digits 3) (return-from %ipv4-literal-p nil)))
+                        ((and (char= ch #\.) (plusp digits)) (incf parts) (setf digits 0))
+                        (t (return-from %ipv4-literal-p nil))))
+         (and (= parts 3) (plusp digits)))))
+
 (defun ice-start-checks (agent &key (interval 0.2) (duration 15.0) (priority 1845494015))
   "Full-agent behaviour layered on the ICE-lite responder: periodically send STUN connectivity
 checks to each of the peer's candidates.  We don't nominate (the peer, controlling, does that) —
@@ -429,7 +453,8 @@ established or DURATION elapses.  Call after ICE-SERVE."
                                           (ice-agent-local-ufrag agent)))))
              (loop until (or (ice-agent-peer agent) (ice-agent-stop agent)
                              (>= (get-internal-real-time) deadline))
-                   do (dolist (c (ice-agent-remote-candidates agent))
+                   do (dolist (c (remove-if-not #'%ipv4-literal-p (ice-agent-remote-candidates agent)
+                                                :key #'ice-candidate-ip))
                         (ignore-errors
                           (ice-send agent
                                     (encode-stun +binding-request+ (stun-transaction-id)
@@ -486,6 +511,12 @@ discriminator; what the datagram IS has to be."
   (declare (type fixnum len))
   (let ((alloc (ice-agent-turn agent)))
     (cond
+      ;; --- a reply to one of OUR transactions (ice-loop.lisp, which defines %TXN-REPLY): STUN
+      ;; to a public server, or TURN control.  Matched by transaction id, so it never reaches the
+      ;; peer path.  Only an agent on a loop ever has transactions, so a threaded one never calls it.
+      ((and (plusp (hash-table-count (ice-agent-txns agent)))
+            (>= len 20) (= (rd-u32be buf 4) +stun-magic+)
+            (%txn-reply agent (subseq buf 0 len))))
       ;; --- traffic from the TURN server -------------------------------------------------
       ((and alloc (%from-turn-server-p alloc host port))
        (cond
@@ -565,6 +596,7 @@ PEER-HOST is a 4-octet vector.  Replies ride Send indications until a channel bi
   agent)
 
 (defun ice-close (agent)
+  (when (ice-agent-loop agent) (return-from ice-close (ice-close-on-loop agent)))
   ;; Release the TURN allocation (Refresh lifetime 0) BEFORE tearing the socket down — otherwise
   ;; it lingers on the server for its full lifetime (~600s) and a small relay-port range exhausts.
   (let ((alloc (ice-agent-turn agent)))

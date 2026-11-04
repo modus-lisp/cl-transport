@@ -85,6 +85,9 @@
    #:turn-install-peer #:turn-long-term-key #:turn-refresh #:turn-refresh-via-loop
    #:turn-start-refresh #:turn-wrap-channeldata #:turn-wrap-send-indication #:xor-mapped-address
    ;; ---- ICE (RFC 8445) --------------------------------------------------------------
+   ;; on an event loop (ice-loop.lisp)
+   #:ice-start-on-loop #:ice-start-checks-on-loop #:ice-close-on-loop #:ice-agent-loop
+   #:turn-allocate-async #:turn-create-permission-async
    #:ice-candidate #:ice-candidate-p #:make-ice-candidate
    #:ice-candidate-foundation #:ice-candidate-component #:ice-candidate-transport
    #:ice-candidate-priority #:ice-candidate-ip #:ice-candidate-port
