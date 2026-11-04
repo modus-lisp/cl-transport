@@ -229,8 +229,11 @@
 
 (defconstant +tcp-recv-chunk+ 65536)
 
+(defvar +no-octets+ (%octets 0) "The empty buffer: read-only, shared.")
+
 (defstruct (tcp-socket (:constructor %make-tcp-socket (sock)))
-  sock (buf (%octets 0)) (pos 0) (eof nil) (closed nil))
+  sock (buf (%octets 0)) (pos 0) (eof nil) (closed nil)
+  (rx nil))                             ; the receive buffer, made once (see %FILL)
 
 (defun tcp-closed-p (ts) (tcp-socket-closed ts))
 (defun %buffered (ts) (- (length (tcp-socket-buf ts)) (tcp-socket-pos ts)))
@@ -240,22 +243,32 @@
   "Wait up to SECONDS for input and read what is there.  NIL if nothing came; end
    of stream sets EOF."
   (when (and (not (tcp-socket-eof ts)) (%readable-p ts seconds))
-    (multiple-value-bind (buf n)
-        ;; an explicit octet buffer: given NIL, SBCL allocates a CHARACTER one
-        (handler-case (sb-bsd-sockets:socket-receive (tcp-socket-sock ts) (%octets +tcp-recv-chunk+)
-                                                     +tcp-recv-chunk+)
-          (error () (values nil 0)))
-      (if (or (null n) (zerop n))
-          (setf (tcp-socket-eof ts) t)
-          (setf (tcp-socket-buf ts)
-                (concatenate '(vector (unsigned-byte 8))
-                             (subseq (tcp-socket-buf ts) (tcp-socket-pos ts)) (subseq buf 0 n))
-                (tcp-socket-pos ts) 0))
-      t)))
+    ;; ONE RECEIVE BUFFER PER SOCKET, and what is kept is sized to what came: a fresh 64 KB
+    ;; buffer per read, then CONCATENATE and SUBSEQ, was most of what a Pi Zero board's desk
+    ;; session allocated -- its RFB server and gateway talk over in-process TCP, a read per input.
+    (let ((rx (or (tcp-socket-rx ts) (setf (tcp-socket-rx ts) (%octets +tcp-recv-chunk+)))))
+      (multiple-value-bind (buf n)
+          ;; an explicit octet buffer: given NIL, SBCL allocates a CHARACTER one
+          (handler-case (sb-bsd-sockets:socket-receive (tcp-socket-sock ts) rx +tcp-recv-chunk+)
+            (error () (values nil 0)))
+        (declare (ignore buf))
+        (if (or (null n) (zerop n))
+            (setf (tcp-socket-eof ts) t)
+            (let* ((old (tcp-socket-buf ts)) (pos (tcp-socket-pos ts)) (left (- (length old) pos))
+                   (new (%octets (+ left n))))
+              (replace new old :start2 pos)
+              (replace new rx :start1 left :end2 n)
+              (setf (tcp-socket-buf ts) new (tcp-socket-pos ts) 0)))
+        t))))
 
 (defun %take (ts n)
-  (prog1 (%simple (subseq (tcp-socket-buf ts) (tcp-socket-pos ts) (+ (tcp-socket-pos ts) n)))
-    (incf (tcp-socket-pos ts) n)))
+  "The next N buffered bytes.  All of them, from the start: the buffer itself (%FILL makes a
+   new one rather than writing into it, so it is the caller's)."
+  (let ((buf (tcp-socket-buf ts)) (pos (tcp-socket-pos ts)))
+    (if (and (zerop pos) (= n (length buf)))
+        (progn (setf (tcp-socket-buf ts) +no-octets+) buf)
+        (prog1 (subseq buf pos (+ pos n))
+          (incf (tcp-socket-pos ts) n)))))
 
 (defun tcp-read-exactly (ts n deadline)
   "Exactly N bytes from TS, by DEADLINE (absolute GET-INTERNAL-REAL-TIME, or NIL):
@@ -279,7 +292,9 @@
   (handler-case
       (let ((v (%simple octets)) (sent 0))
         (loop while (< sent (length v))
-              do (let ((n (sb-bsd-sockets:socket-send (tcp-socket-sock ts) (subseq v sent) (- (length v) sent))))
+              do (let ((n (sb-bsd-sockets:socket-send (tcp-socket-sock ts)
+                                                      (if (zerop sent) v (subseq v sent))
+                                                      (- (length v) sent))))
                    (when (or (null n) (<= n 0)) (return-from tcp-write :closed))
                    (incf sent n)))
         :ok)
