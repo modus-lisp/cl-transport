@@ -33,7 +33,8 @@
 ;;; ITS OWN SYSTEM FOR /listeners' REASON, WITH A DIFFERENT ANSWER.  listeners is
 ;;; sb-bsd-sockets alone so a window system can open a socket without quicklisp.  This one
 ;;; genuinely needs bordeaux-threads (TURN runs a refresh timer and a transaction loop) and
-;;; ironclad (MESSAGE-INTEGRITY is HMAC-SHA1; the long-term credential is MD5).  What it
+;;; seal (MESSAGE-INTEGRITY is HMAC-SHA1; the long-term credential is MD5; random ids come
+;;; from natrium, under seal).  What it
 ;;; does not need is usocket -- so a caller wanting NAT traversal does not also get a
 ;;; SOCKS5 client, which declaring the whole of cl-transport would have handed them.
 (defsystem "cl-transport/ice"
@@ -42,7 +43,7 @@
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "ironclad" "uiop" "cl-transport/loop")
+  :depends-on ("sb-bsd-sockets" "bordeaux-threads" "seal" "uiop" "cl-transport/loop")
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "ice-packages")   ; the package + its byte helpers

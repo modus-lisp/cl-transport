@@ -35,7 +35,7 @@
 ;;;;
 ;;;; The same reasoning applies here and gives a DIFFERENT answer, so it is worth stating
 ;;;; rather than copying: this stack genuinely needs bordeaux-threads (TURN keeps a refresh
-;;;; timer and a transaction loop) and ironclad (MESSAGE-INTEGRITY is HMAC-SHA1, and TURN's
+;;;; timer and a transaction loop) and seal (MESSAGE-INTEGRITY is HMAC-SHA1, and TURN's
 ;;;; long-term credential is MD5(user:realm:pass)).  What it does NOT need is usocket, and
 ;;;; declaring the whole of cl-transport would have added it.  So: its own system, three
 ;;;; dependencies, and a caller that wants NAT traversal does not get a SOCKS5 client.
@@ -57,7 +57,6 @@
 
 (defpackage #:cl-transport.ice
   (:use #:cl)
-  (:local-nicknames (#:ic #:ironclad))
   (:documentation "STUN, TURN and ICE: getting a datagram between two peers behind NATs.")
   (:export
    ;; ---- byte helpers (see the header: copied from webrtc-data/src/util.lisp) ----
@@ -149,10 +148,6 @@
 (defun rd-u32be (v off) (logior (ash (aref v off) 24) (ash (aref v (1+ off)) 16)
                                 (ash (aref v (+ off 2)) 8) (aref v (+ off 3))))
 
-;;; /dev/urandom, with ironclad's Fortuna as the fallback for a platform that has no such
-;;; file — a TURN transaction id has to be unguessable, so this is not a place to degrade
-;;; quietly to something weaker without saying so.
-(defun random-bytes (n)
-  (handler-case
-      (with-open-file (f "/dev/urandom" :element-type 'u8) (let ((b (u8vec n))) (read-sequence b f) b))
-    (error () (ic:random-data n (ic:make-prng :fortuna)))))
+;;; natrium's CSPRNG (the OS's entropy, or the board's hardware RNG on bare metal) -- a TURN
+;;; transaction id has to be unguessable, so this is not a place to degrade quietly.
+(defun random-bytes (n) (natrium:random-bytes n))

@@ -70,7 +70,7 @@
 (defun turn-long-term-key (user realm pass)
   "RFC 5766 §4: the MESSAGE-INTEGRITY HMAC-SHA1 key for long-term credentials is the 16-byte
 MD5 digest of \"username:realm:password\"."
-  (ic:digest-sequence :md5 (ascii (format nil "~a:~a:~a" user realm pass))))
+  (seal:md5 (ascii (format nil "~a:~a:~a" user realm pass))))
 
 ;;; ---- server-address helpers ------------------------------------------------------------
 

@@ -37,11 +37,20 @@
 
 (defun %hdr (type len tid) (cat-bytes (u16be type) (u16be len) (u32be +stun-magic+) tid))
 
-(defun crc32 (bytes) (rd-u32be (ic:digest-sequence :crc32 (as-u8vec bytes)) 0))
+;;; CRC-32 (ISO-HDLC, reflected #xEDB88320) for the FINGERPRINT attribute.
+(defvar *crc32-table*
+  (let ((tab (make-array 256 :element-type '(unsigned-byte 32))))
+    (dotimes (n 256 tab)
+      (let ((c n))
+        (dotimes (k 8) (setf c (if (logbitp 0 c) (logxor #xEDB88320 (ash c -1)) (ash c -1))))
+        (setf (aref tab n) c)))))
+(defun crc32 (bytes)
+  (let ((c #xFFFFFFFF) (tab *crc32-table*))
+    (loop for b across bytes do (setf c (logxor (aref tab (logand (logxor c b) #xFF)) (ash c -8))))
+    (logxor c #xFFFFFFFF)))
 (defun hmac-sha1 (key bytes)
   ;; ICE short-term credentials key the HMAC by the peer's ICE password (as bytes).
-  (let ((m (ic:make-mac :hmac (if (stringp key) (ascii key) (as-u8vec key)) :sha1)))
-    (ic:update-mac m (as-u8vec bytes)) (ic:produce-mac m)))
+  (seal:hmac-sha1 (if (stringp key) (ascii key) (as-u8vec key)) (as-u8vec bytes)))
 
 (defun encode-stun (type tid attrs &key integrity-key fingerprint)
   "Build a STUN message.  Appends MESSAGE-INTEGRITY (keyed by INTEGRITY-KEY) then FINGERPRINT,
